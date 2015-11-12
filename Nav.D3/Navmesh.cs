@@ -17,26 +17,34 @@ namespace Nav.D3
 {
     public class Navmesh : Nav.Navmesh
     {
-        public Navmesh(Engine engine, ExplorationEngine explorator, bool verbose = false)
-            : base(explorator, verbose)
+        public Navmesh(Engine engine, bool verbose = false)
+            : base(verbose)
         {
-            using (new Profiler("[Nav.D3] Loading SNO data cache took {t}."))
-                LoadSnoCache();
-
             m_Engine = engine;
-            m_FetchNavDataTimer.AutoReset = false;
-            m_FetchNavDataTimer.Interval = 300;
-            m_FetchNavDataTimer.Elapsed += new ElapsedEventHandler(FetchData);
-            m_FetchNavDataTimer.Start();
 
-            DangerRegionsEnabled = false;
+            if (engine != null)
+            {
+                using (new Profiler("[Nav.D3] Loading SNO data cache took {t}."))
+                    LoadSnoCache();
 
-            m_FetchDangerRegionsTimer.AutoReset = false;
-            m_FetchDangerRegionsTimer.Interval = 100;
-            m_FetchDangerRegionsTimer.Elapsed += new ElapsedEventHandler(FetchDangerRegions);
-            m_FetchDangerRegionsTimer.Start();            
+                m_FetchNavDataTimer.AutoReset = false;
+                m_FetchNavDataTimer.Interval = 300;
+                m_FetchNavDataTimer.Elapsed += new ElapsedEventHandler(FetchData);
+                m_FetchNavDataTimer.Start();
 
-            Log("[Nav.D3] Navmesh created!");
+                DangerRegionsEnabled = false;
+
+                m_FetchDangerRegionsTimer.AutoReset = false;
+                m_FetchDangerRegionsTimer.Interval = 100;
+                m_FetchDangerRegionsTimer.Elapsed += new ElapsedEventHandler(FetchDangerRegions);
+                m_FetchDangerRegionsTimer.Start();
+
+                Log("[Nav.D3] Navmesh created!");
+            }
+            else
+            {
+                Log("[Nav.D3] Navmesh not properly created, engine is null!");
+            }
         }
 
         public override void Dispose()
@@ -159,9 +167,9 @@ namespace Nav.D3
             set { using (new WriteLock(D3InputLock)) m_AllowedGridCellsId = new List<int>(value); }
         }
 
-        public static Navmesh Create(Engine engine, ExplorationEngine explorator = null, bool verbose = false)
+        public static Navmesh Create(Engine engine, bool verbose = false)
         {
-            return Current = new Navmesh(engine, explorator, verbose);
+            return Current = new Navmesh(engine, verbose);
         }
 
         public static Navmesh Current { get; private set; }
@@ -293,10 +301,9 @@ namespace Nav.D3
 
                 if (grid_cells_added > 0)
                 {
-                    Log("[Nav.D3] " + grid_cells_added + " grid cells added" + (Explorator == null ? " (EXPLORATOR NOT PRESENT!!!)" : "") + ".");
+                    Log("[Nav.D3] " + grid_cells_added + " grid cells added.");
 
-                    if (Explorator != null)
-                        Explorator.OnNavDataChange();
+                    NotifyOnNavDataChanged();
                 }
             }
         }

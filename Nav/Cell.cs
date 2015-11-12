@@ -104,8 +104,10 @@ namespace Nav
         }
 
         // Try to add given cell as neighbour. Returns true when actually added.
-        public bool AddNeighbour(Cell cell)
+        public bool AddNeighbour(Cell cell, out Vec3 border_point)
         {
+            border_point = null;
+
             if (cell.Equals(this))
                 return false;
 
@@ -118,6 +120,8 @@ namespace Nav
 
                 AddNeighbour(cell, intersection.Center);
                 cell.AddNeighbour(this, intersection.Center);
+
+                border_point = new Vec3(intersection.Center);
                 
                 return true;
             }
@@ -166,12 +170,12 @@ namespace Nav
         internal int GlobalId { get; set; }
 
         public int Id { get; private set; }
-        public MovementFlag Flags { get; private set; }
+        public MovementFlag Flags { get; protected set; }
         public bool Replacement { get; set; }
         public bool Disabled { get; set; }
         public float MovementCostMult { get; set; }
         public Int64 UserData { get; set; }
-        public AABB AABB { get; private set; }
+        public AABB AABB { get; protected set; }
         public Vec3 Center { get { return AABB.Center; } }
         public Vec3 Min { get { return AABB.Min; } }
         public Vec3 Max { get { return AABB.Max; } }

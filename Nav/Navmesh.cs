@@ -54,7 +54,7 @@ namespace Nav
 
     public class Navmesh : IDisposable
     {
-        public Navmesh(ExplorationEngine explorator = null, bool verbose = false)
+        public Navmesh(bool verbose = false)
         {
             Log("[Nav] Creating navmesh...");
 
@@ -65,14 +65,6 @@ namespace Nav
             UpdatesThread.Name = "Navmesh-UpdatesThread";
             UpdatesThread.Start();
 
-            Navigator = new NavigationEngine(this);
-
-            if (explorator != null)
-            {
-                explorator.AttachToNavmesh(this);
-                Explorator = explorator;
-            }
-
             Verbose = verbose;
 
             Log("[Nav] Navmesh created");
@@ -81,29 +73,6 @@ namespace Nav
         // when true will print additional data to output
         public bool Verbose { get; set; }
 
-        public ExplorationEngine Explorator
-        {
-            get { return m_Explorator; }
-            
-            private set
-            {
-                if (m_Explorator == value)
-                    return;
-
-                if (m_Explorator != null)
-                    m_Explorator.Dispose();
-
-                m_Explorator = value;
-
-                if (m_Explorator == null)
-                    return;
-
-                Log("[Nav] Explorator " + (m_Explorator.Enabled ? "enabled" : "disabled"));
-            }
-        }
-
-        public NavigationEngine Navigator { get; private set; }
-        
         public bool Add(GridCell g_cell, bool trigger_nav_data_change)
         {
             if (g_cell == null || g_cell.Cells.Count == 0)
@@ -124,8 +93,6 @@ namespace Nav
                     Log("[Nav] Grid cell {" + g_cell.GlobalId + "} with " + g_cell.Cells.Count + " cell(s) merged with grid cell {" + base_grid_cell.GlobalId + "}");
                 }
 
-                m_AllCells.AddRange(g_cell.Cells);
-                
                 foreach (GridCell grid_cell in m_GridCells)
                     grid_cell.AddNeighbour(g_cell);
 
@@ -135,14 +102,44 @@ namespace Nav
 
                     Log("[Nav] Grid cell {" + g_cell.GlobalId + "} with " + g_cell.Cells.Count + " cell(s) added");
                 }
+
+                m_AllCells.AddRange(g_cell.Cells);
+                UpdateCellsPatches(g_cell.Cells);
+
+                NotifyOnGridCellAdded(g_cell);
             }
 
-            if (Explorator != null)
-                Explorator.OnGridCellAdded(g_cell, trigger_nav_data_change);
-
-            Navigator.RequestPathUpdate();
+            NotifyOnNavDataChanged();
 
             return true;
+        }
+
+        private void UpdateCellsPatches(List<Cell> cells)
+        {
+            //using (new Profiler("[Nav] Cells patches refreshed [{t}]"))
+            {
+                foreach (Cell c in cells)
+                {
+                    if (!c.HasFlags(MovementFlag.Walk))
+                        continue;
+
+                    HashSet<Cell> merged_cells = new HashSet<Cell>{c};
+
+                    // find all patches, this cell neighbours belongs to
+                    foreach (var neighbour in c.Neighbours)
+                    {
+                        CellsPatch connected_patch = m_CellsPatches.FirstOrDefault(x => x.Cells.Contains(neighbour.cell));
+
+                        if (connected_patch != null)
+                        {
+                            merged_cells.UnionWith(connected_patch.Cells);
+                            m_CellsPatches.Remove(connected_patch);
+                        }
+                    }
+
+                    m_CellsPatches.Add(new CellsPatch(merged_cells, c.Flags));                
+                }
+            }
         }
 
         private const int MAX_CELLS_CACHE_SIZE = 6;
@@ -150,8 +147,8 @@ namespace Nav
         private static ReaderWriterLockSlim CellsCacheLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
         internal static List<Cell> m_CellsCache = new List<Cell>();
 
-        // Aquires DataLock (read)
-        internal bool GetCellContaining(Vec3 p, out Cell c, HashSet<Cell> exclude_cells = null, bool nearest = false, MovementFlag flags = MovementFlag.Walk, bool test_2d = false, float z_tolerance = 0)
+        // Returns true when position is on navmesh. Aquires DataLock (read)
+        internal bool GetCellContaining(Vec3 p, out Cell c, MovementFlag flags = MovementFlag.Walk, bool allow_disabled = false, bool nearest = false, float nearest_tolerance = -1, bool test_2d = false, float z_tolerance = 0, HashSet<Cell> exclude_cells = null)
         {
             using (new ReadLock(DataLock))
             {
@@ -165,7 +162,7 @@ namespace Nav
                 {
                     foreach (Cell cell in m_CellsCache.FindAll(x => x.HasFlags(flags)))
                     {
-                        if (!cell.Disabled && (exclude_cells == null || !exclude_cells.Contains(cell)) && (test_2d ? cell.Contains2D(p) : cell.Contains(p, z_tolerance)))
+                        if ((allow_disabled || !cell.Disabled) && (exclude_cells == null || !exclude_cells.Contains(cell)) && (test_2d ? cell.Contains2D(p) : cell.Contains(p, z_tolerance)))
                         {
                             c = cell;
                             return true;
@@ -177,7 +174,7 @@ namespace Nav
 
                 foreach (GridCell grid_cell in m_GridCells)
                 {
-                    List<Cell> cells = grid_cell.Cells.FindAll(x => !x.Disabled && x.HasFlags(flags));
+                    List<Cell> cells = grid_cell.Cells.FindAll(x => (allow_disabled || !x.Disabled) && x.HasFlags(flags));
 
                     if (grid_cell.Contains2D(p))
                     {
@@ -209,7 +206,7 @@ namespace Nav
 
                             float dist = cell.Distance(p);
 
-                            if (dist < min_dist)
+                            if ((nearest_tolerance < 0 || dist <= nearest_tolerance) && dist < min_dist)
                             {
                                 min_dist = dist;
                                 c = cell;
@@ -345,39 +342,39 @@ namespace Nav
             while (true)
             {
                 UpdateRegions();
-                Thread.Sleep(50);
+                Thread.Sleep(250);
             }
         }
 
         private void UpdateRegions()
         {
+            // keep reference to current regions just in case someone sets new regions meanwhile
+            HashSet<region_data> regions_copy = m_Regions;
+
             using (new WriteLock(DataLock))
             {
                 foreach (var data in m_CellsOverlappedByRegions)
                     data.Value.areas.Clear();
-
+            
                 if (RegionsEnabled)
                 {
-                    using (new ReadLock(InputLock))
+                    // update cells overlapped by avoid areas
+                    foreach (region_data region in regions_copy)
                     {
-                        // update cells overlapped by avoid areas
-                        foreach (region_data region in m_Regions)
+                        List<GridCell> g_cells = m_GridCells.FindAll(x => x.AABB.Overlaps2D(region.area));
+                        List<Cell> cells = new List<Cell>();
+
+                        // do not ignore disabled cells on purpose so we don't have to iterate separately over
+                        foreach (GridCell g_cell in g_cells)
+                            cells.AddRange(g_cell.Cells.FindAll(x => !x.Replacement && x.HasFlags(MovementFlag.Walk) && x.AABB.Overlaps2D(region.area)));
+
+                        foreach (Cell cell in cells)
                         {
-                            List<GridCell> g_cells = m_GridCells.FindAll(x => x.AABB.Overlaps2D(region.area));
-                            List<Cell> cells = new List<Cell>();
+                            overlapped_cell_data data = null;
+                            if (!m_CellsOverlappedByRegions.TryGetValue(cell.GlobalId, out data))
+                                m_CellsOverlappedByRegions[cell.GlobalId] = data = new overlapped_cell_data(cell);
 
-                            // do not ignore disabled cells on purpose so we don't have to iterate separately over
-                            foreach (GridCell g_cell in g_cells)
-                                cells.AddRange(g_cell.Cells.FindAll(x => !x.Replacement && x.HasFlags(MovementFlag.Walk) && x.AABB.Overlaps2D(region.area)));
-
-                            foreach (Cell cell in cells)
-                            {
-                                overlapped_cell_data data = null;
-                                if (!m_CellsOverlappedByRegions.TryGetValue(cell.GlobalId, out data))
-                                    m_CellsOverlappedByRegions[cell.GlobalId] = data = new overlapped_cell_data(cell);
-
-                                data.areas.Add(new region_data(region));
-                            }
+                            data.areas.Add(new region_data(region));
                         }
                     }
                 }
@@ -473,8 +470,10 @@ namespace Nav
                                 // try to connect new replacement cells with potential neighbors
                                 foreach (Cell replacement_cell in data.replacement_cells)
                                 {
+                                    Vec3 border_point = null;
+
                                     foreach (Cell potential_neighbor in potential_neighbors)
-                                        replacement_cell.AddNeighbour(potential_neighbor);
+                                        replacement_cell.AddNeighbour(potential_neighbor, out border_point);
 
                                     parent_grid_cell.Cells.Add(replacement_cell);
                                     m_AllCells.Add(replacement_cell);
@@ -496,7 +495,9 @@ namespace Nav
                 }
 
                 if (anything_changed)
-                    Navigator.RequestPathUpdate();
+                {
+                    NotifyOnNavDataChanged();
+                }
 
                 // remove inactive data
                 foreach (int key in inactive_keys)
@@ -526,12 +527,10 @@ namespace Nav
 
                 m_LastGridCellId = 0;
                 m_LastCellId = 0;
+
+                foreach (NavmeshObserver observer in m_Observers)
+                    observer.OnNavDataCleared();
             }
-
-            if (Explorator != null)
-                Explorator.Clear();
-
-            Navigator.Clear();
 
             Log("[Nav] Navmesh cleared!");
         }
@@ -588,14 +587,6 @@ namespace Nav
                             {
                                 avoid_areas.Add(new region_data(new AABB(float.Parse(data[1], inv), float.Parse(data[2], inv), float.Parse(data[3], inv), float.Parse(data[4], inv), float.Parse(data[5], inv), float.Parse(data[6], inv)), float.Parse(data[7], inv)));
                             }
-                            else if (data[0] == "s")
-                            {
-                                Navigator.CurrentPos = new Vec3(float.Parse(data[1], inv), float.Parse(data[2], inv), float.Parse(data[3], inv));
-                            }
-                            else if (data[0] == "e")
-                            {
-                                Navigator.Destination = new Vec3(float.Parse(data[1], inv), float.Parse(data[2], inv), float.Parse(data[3], inv));
-                            }
                         }
 
                         // add last grid cell
@@ -606,9 +597,8 @@ namespace Nav
 
                         random_grid_cell = m_GridCells[rng.Next(m_GridCells.Count)];
 
-                        if (Explorator != null)
-                            Explorator.OnNavDataChange();
-
+                        NotifyOnNavDataChanged();
+                        
                         Regions = avoid_areas;
                         
                         Log("[Nav] Navmesh loaded.");
@@ -694,7 +684,7 @@ namespace Nav
                 if (to.IsEmpty)
                     return false;
 
-                if (from_cell == null && !GetCellContaining(from, out from_cell, ignored_cells, false, flags, test_2d, 2))
+                if (from_cell == null && !GetCellContaining(from, out from_cell, flags, false, false, -1, test_2d, 2, ignored_cells))
                     return false;
 
                 if (test_2d ? from_cell.Contains2D(to) : from_cell.Contains(to, 2))
@@ -747,13 +737,34 @@ namespace Nav
             }
         }
 
-        public bool AreConnected(Vec3 pos1, Vec3 pos2, MovementFlag flags)
+        public bool AreConnected(Vec3 pos1, Vec3 pos2, MovementFlag flags, float tolerance)
         {
             using (new ReadLock(DataLock))
             {
-                GridCell pos1_gc = m_GridCells.Find(g => g.Contains2D(pos1));
-                GridCell pos2_gc = m_GridCells.Find(g => g.Contains2D(pos2));
-                return Algorihms.AreConnected(pos1_gc, ref pos2_gc, flags);
+                Cell pos1_cell = null;
+                Cell pos2_cell = null;
+
+                // do not ignore disabled as cells patches to not include replacement cells!
+                GetCellContaining(pos1, out pos1_cell, flags, true, true, tolerance, false, 2);
+
+                if (pos1_cell == null)
+                    return false;
+
+                // do not ignore disabled as cells patches to not include replacement cells!
+                GetCellContaining(pos2, out pos2_cell, flags, true, true, tolerance, false, 2);
+
+                if (pos2_cell == null)
+                    return false;
+
+                IEnumerable<CellsPatch> pos1_patches = m_CellsPatches.Where(x => x.Cells.Contains(pos1_cell));
+
+                foreach (var p in pos1_patches)
+                {
+                    if (p.Cells.Contains(pos2_cell))
+                        return true;
+                }
+
+                return false;
             }
         }
 
@@ -835,9 +846,10 @@ namespace Nav
             Log("[Nav] Navmesh dumped.");
         }
 
-        public void Serialize(string filename)
+        // Extension will be automatically added
+        public void Serialize(string name)
         {
-            using (FileStream fs = File.OpenWrite(filename))
+            using (FileStream fs = File.OpenWrite(name + ".navmesh"))
             using (BinaryWriter w = new BinaryWriter(fs))
             {
                 OnSerialize(w);
@@ -877,6 +889,16 @@ namespace Nav
 
                 w.Write(GridCell.LastGridCellGlobalId);
 
+                // write all patches global IDs
+                w.Write(m_CellsPatches.Count);
+                foreach (CellsPatch patch in m_CellsPatches)
+                    w.Write(patch.GlobalId);
+
+                foreach (CellsPatch patch in m_CellsPatches)
+                    patch.Serialize(w);
+
+                w.Write(CellsPatch.LastCellsPatchGlobalId);
+
                 w.Write(m_Regions.Count);
                 foreach (region_data region in m_Regions)
                     region.Serialize(w);
@@ -887,19 +909,15 @@ namespace Nav
                     w.Write(entry.Key);
                     entry.Value.Serialize(w);
                 }
-
-                Navigator.Serialize(w);
-
-                if (Explorator != null)
-                    Explorator.Serialize(w);
             }
 
             Log("[Nav] Navmesh serialized.");
         }
 
-        public void Deserialize(string filename)
+        // Extension will be automatically added
+        public void Deserialize(string name)
         {
-            using (FileStream fs = File.OpenRead(filename))
+            using (FileStream fs = File.OpenRead(name + ".navmesh"))
             using (BinaryReader r = new BinaryReader(fs))
             {
                 OnDeserialize(r);
@@ -954,6 +972,24 @@ namespace Nav
 
                     GridCell.LastGridCellGlobalId = r.ReadInt32();
 
+                    List<CellsPatch> patches = new List<CellsPatch>();
+                    int patches_count = r.ReadInt32();
+
+                    // pre-allocate patches
+                    for (int i = 0; i < patches_count; ++i)
+                    {
+                        CellsPatch patch = new CellsPatch(new HashSet<Cell>(), MovementFlag.None);
+                        patch.GlobalId = r.ReadInt32();
+                        patches.Add(patch);
+                    }
+
+                    foreach (CellsPatch patch in patches)
+                        patch.Deserialize(m_AllCells, r);
+
+                    m_CellsPatches = new HashSet<CellsPatch>(patches);
+
+                    CellsPatch.LastCellsPatchGlobalId = r.ReadInt32();
+
                     int regions_count = r.ReadInt32();
                     for (int i = 0; i < regions_count; ++i)
                         m_Regions.Add(new region_data(r));
@@ -964,11 +1000,6 @@ namespace Nav
                         int key = r.ReadInt32();
                         m_CellsOverlappedByRegions.Add(key, new overlapped_cell_data(m_AllCells, r));
                     }
-
-                    Navigator.Deserialize(m_AllCells, r);
-
-                    if (Explorator != null)
-                        Explorator.Deserialize(m_AllCells, r);
                 }
             }
 
@@ -978,11 +1009,6 @@ namespace Nav
         public virtual void Dispose()
         {
             UpdatesThread.Abort();
-
-            if (m_Explorator != null)
-                m_Explorator.Dispose();
-
-            Navigator.Dispose();
         }
 
         protected internal void Log(string msg)
@@ -1026,6 +1052,45 @@ namespace Nav
             return cells.FindAll(x => x.AABB.Inside(circle_center, radius));
         }
 
+        public void AddObserver(NavmeshObserver observer)
+        {
+            using (new WriteLock(InputLock))
+            {
+                if (m_Observers.Contains(observer))
+                    return;
+
+                m_Observers.Add(observer);
+            }
+        }
+
+        public void RemoveObserver(NavmeshObserver observer)
+        {
+            using (new WriteLock(InputLock))
+                m_Observers.Remove(observer);
+        }
+
+        protected void NotifyOnNavDataChanged()
+        {
+            List<NavmeshObserver> observers_copy = null;
+
+            using (new ReadLock(InputLock))
+                observers_copy = m_Observers.ToList();
+
+            foreach (NavmeshObserver observer in observers_copy)
+                observer.OnNavDataChanged();
+        }
+
+        protected void NotifyOnGridCellAdded(GridCell g_cell)
+        {
+            List<NavmeshObserver> observers_copy = null;
+
+            using (new ReadLock(InputLock))
+                observers_copy = m_Observers.ToList();
+
+            foreach (NavmeshObserver observer in observers_copy)
+                observer.OnGridCellAdded(g_cell);
+        }
+
         private int m_LastGridCellId = 0;
         private int m_LastCellId = 0;
         private Random Rng = new Random();
@@ -1038,9 +1103,9 @@ namespace Nav
         public ReadLock AquireReadDataLock() { return new ReadLock(DataLock); }
         
         internal List<Cell> m_AllCells = new List<Cell>(); //@ DataLock
+        private HashSet<CellsPatch> m_CellsPatches = new HashSet<CellsPatch>(); //@ DataLock
         internal List<GridCell> m_GridCells = new List<GridCell>(); //@ DataLock
-        private HashSet<region_data> m_Regions = new HashSet<region_data>(); //@ DataLock
-        
-        private ExplorationEngine m_Explorator;
+        private HashSet<region_data> m_Regions = new HashSet<region_data>(); //@ InputLock
+        private List<NavmeshObserver> m_Observers = new List<NavmeshObserver>(); //@ InputLock
     }
 }

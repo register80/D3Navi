@@ -459,7 +459,73 @@ namespace Nav
             }
         }
 
-        public static void Visit<T>(T cell, ref List<T> visited, MovementFlag flags, bool visit_disabled, int depth = 1, int max_depth = -1, List<T> allowed_cells = null) where T : Cell
+        public interface IDistanceVisitor<T> where T : Cell
+        {
+            void Visit(T cell, float dist);
+        }
+
+        public interface IVisitor<T> where T : Cell
+        {
+            void Visit(T cell);
+        }
+
+        private class visit_node<T> where T : Cell
+        {
+            public visit_node(T cell, float dist, int depth) { this.cell = cell; this.distance = dist; this.depth = depth; }
+            public T cell;
+            public float distance;
+            public int depth;
+        }
+
+        public static void VisitBreadth<T>(T cell, MovementFlag flags, int max_depth = -1, HashSet<T> allowed_cells = null, IDistanceVisitor<T> visitor = null) where T : Cell
+        {
+            HashSet<T> visited = new HashSet<T>();
+            List<visit_node<T>> to_visit = new List<visit_node<T>>();
+            to_visit.Add(new visit_node<T>(cell, 0, 0));
+            
+            while (to_visit.Count > 0)
+            {                
+                visit_node<T> cell_data = to_visit.First();
+                to_visit.RemoveAt(0);
+                visited.Add(cell_data.cell);
+
+                if (visitor != null && (allowed_cells == null || allowed_cells.Contains(cell_data.cell)))
+                    visitor.Visit(cell_data.cell, cell_data.distance);
+
+                if (max_depth < 0 || cell_data.depth < max_depth)
+                {
+                    foreach (Cell.Neighbour neighbour in cell_data.cell.Neighbours)
+                    {
+                        T neighbour_cell = (T)neighbour.cell;
+                        float distance = cell_data.distance + cell_data.cell.Distance(neighbour_cell);
+
+                        visit_node<T> neighbour_cell_data = to_visit.FirstOrDefault(x => x.cell.Equals(neighbour_cell));
+
+                        if (neighbour_cell_data != null)
+                        {
+                            neighbour_cell_data.distance = Math.Min(neighbour_cell_data.distance, distance);
+                            continue;
+                        }
+                        
+                        if ((neighbour.connection_flags & flags) != flags ||
+                            visited.Contains(neighbour_cell))
+                        {
+                            continue;
+                        }
+
+                        to_visit.Add(new visit_node<T>(neighbour_cell, distance, cell_data.depth + 1));
+                    }
+                }
+            }
+        }
+
+        public static void Visit<T>(T cell, MovementFlag flags, int max_depth = -1, HashSet<T> allowed_cells = null, IVisitor<T> visitor = null) where T : Cell
+        {
+            HashSet<T> visited = new HashSet<T>();
+            Visit<T>(cell, ref visited, flags, true, 1, max_depth, null, visitor);
+        }
+
+        public static void Visit<T>(T cell, ref HashSet<T> visited, MovementFlag flags, bool visit_disabled, int depth = 1, int max_depth = -1, HashSet<T> allowed_cells = null, IVisitor<T> visitor = null) where T : Cell
         {
             visited.Add(cell);
 
@@ -473,9 +539,33 @@ namespace Nav
                 if ((!visit_disabled && neighbour_cell.Disabled) || (neighbour.connection_flags & flags) != flags)
                     continue;
 
+                if (visitor != null)
+                    visitor.Visit(neighbour_cell);
+
                 if ((allowed_cells == null || allowed_cells.Contains(neighbour_cell)) && !visited.Contains(neighbour_cell))
-                    Visit(neighbour_cell, ref visited, flags, visit_disabled, depth + 1, max_depth, allowed_cells);
+                    Visit(neighbour_cell, ref visited, flags, visit_disabled, depth + 1, max_depth, allowed_cells, visitor);
             }
+        }
+
+        public static List<CellsPatch> GenerateCellsPatches(List<Cell> cells, MovementFlag movement_flags)
+        {
+            List<CellsPatch> patches = new List<CellsPatch>();
+
+            //create cells patch for each interconnected group of cells
+            HashSet<Cell> cells_copy = new HashSet<Cell>(cells);
+
+            while (cells_copy.Count > 0)
+            {
+                HashSet<Cell> visited = new HashSet<Cell>();
+
+                Algorihms.Visit(cells_copy.First(), ref visited, movement_flags, true, 1, -1, cells_copy);
+
+                patches.Add(new CellsPatch(visited, movement_flags));
+
+                cells_copy.RemoveWhere(x => visited.Contains(x));
+            }
+
+            return patches;
         }
 
         //public static Vec3 GetRunAwayPosition(List<GridCell> grid_cells, HashSet<Navmesh.region_data> regions, Vec3 p, float min_run_away_dist, MovementFlag flags = MovementFlag.Walk)

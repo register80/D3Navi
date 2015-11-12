@@ -21,39 +21,44 @@ namespace Nav
         All = 0xFFFF,
     }
 
-    public class NavigationEngine : IDisposable
+    public class NavigationEngine : IDisposable, NavmeshObserver
     {
         public NavigationEngine(Navmesh navmesh)
         {
             m_Navmesh = navmesh;
+            m_Navmesh.AddObserver(this);
 
             UpdatesThread = new Thread(Updates);
             UpdatesThread.Name = "Navigator-UpdatesThread";
             UpdatesThread.Start();
 
             Precision = 8;
-            GridCellPrecision = 40;
-            ExploreCellPrecision = 25;
+            GridDestPrecision = 40;
+            ExploreDestPrecision = 20;
             PathRandomCoeff = 0;
             PathNodesShiftDist = 5;
             CurrentPosDiffRecalcThreshold = 20;
             UpdatePathInterval = -1;
             EnableAntiStuck = false;
             IsStandingOnPurpose = true;
-            MovementFlags = MovementFlag.Walk;            
+            MovementFlags = MovementFlag.Walk;
         }
 
-        public void AddListener(NavigationObserver listener)
+        public void AddObserver(NavigationObserver observer)
         {
-            if (m_Listeners.Contains(listener))
-                return;
+            using (new WriteLock(InputLock))
+            {
+                if (m_Observers.Contains(observer))
+                    return;
 
-            m_Listeners.Add(listener);
+                m_Observers.Add(observer);
+            }
         }
 
-        public void RemoveListener(NavigationObserver listener)
+        public void RemoveObserver(NavigationObserver observer)
         {
-            m_Listeners.Remove(listener);
+            using (new WriteLock(InputLock))
+                m_Observers.Remove(observer);
         }
 
         // defines how user can move through navmesh
@@ -62,13 +67,13 @@ namespace Nav
         // precision with each path node will be accepted as reached
         public float Precision { get; set; }
 
-        // precision with grid cell will be accepted as reached
-        public float GridCellPrecision { get; set; }
+        // precision with grid destination will be accepted as reached
+        public float GridDestPrecision { get; set; }
 
-        // precision with grid cell will be accepted as reached
-        public float ExploreCellPrecision { get; set; }
+        // precision with explore destination will be accepted as reached
+        public float ExploreDestPrecision { get; set; }
 
-        // precision with each path node will be accepted as reached
+        // how much path will be randomized 0 by default
         public float PathRandomCoeff { get; set; }
 
         // each point on path will be offseted in direction from previous point so bot will move along path more precisely even with high precision parameter
@@ -122,14 +127,14 @@ namespace Nav
                 Cell start = null;
                 Cell end = null;
 
-                bool start_on_nav_mesh = m_Navmesh.GetCellContaining(from, out start, null, as_close_as_possible, flags, false, 2);
-                bool end_on_nav_mesh = m_Navmesh.GetCellContaining(to, out end, null, as_close_as_possible, flags, false, 2);
+                bool start_on_nav_mesh = m_Navmesh.GetCellContaining(from, out start, flags, false, as_close_as_possible, -1, false, 2, null);
+                bool end_on_nav_mesh = m_Navmesh.GetCellContaining(to, out end, flags, false, as_close_as_possible, -1, false, 2, null);
 
                 if (bounce)
                 {
                     Vec3 bounce_dir = start.AABB.GetBounceDir2D(from);
                     Vec3 new_from = from + bounce_dir * 10;
-                    m_Navmesh.GetCellContaining(new_from, out start, null, as_close_as_possible, flags, false, 2);
+                    m_Navmesh.GetCellContaining(new_from, out start, flags, false, as_close_as_possible, -1, false, 2, null);
 
                     if (!Algorihms.FindPath<Cell>(start, ref end, new_from, to, flags, ref tmp_path, random_coeff, true))
                         return false;
@@ -204,13 +209,6 @@ namespace Nav
                     path[i] += dir_to_next * shift_nodes_distance;
                 }
             }
-        }
-
-        public bool IsPositionReachable(Vec3 from, Vec3 to, MovementFlag flags, float tolerance)
-        {
-            List<Vec3> tmp_path = new List<Vec3>();
-            FindPath(from, to, flags, ref tmp_path, -1, true, true, 0, false, 0, false);
-            return tmp_path.Count > 0 ? tmp_path.Last().Distance(to) <= tolerance : false;
         }
 
         public Vec3 Destination
@@ -347,9 +345,9 @@ namespace Nav
 
                 if (huge_current_pos_change || path_empty)
                 {
-                    if (huge_current_pos_change && m_Navmesh.Explorator != null)
-                        m_Navmesh.Explorator.OnHugeCurrentPosChange();
-
+                    if (huge_current_pos_change)
+                        NotifyOnHugeCurrentPosChange();
+                    
                     RequestPathUpdate();
                 }
 
@@ -398,52 +396,15 @@ namespace Nav
                 }
 
                 if (!value)
-                {
                     ClearDestination(DestType.BackTrack);
-
-                    // all other "destination" updates will be handled by navigator
-                    if (m_Navmesh.Explorator != null)
-                        m_Navmesh.Explorator.RequestExplorationUpdate();
-                }
             }
         }
-
-        //public bool RunAwayEnabled
-        //{
-        //    get
-        //    {
-        //        return m_RunAway;
-        //    }
-
-        //    set
-        //    {
-        //        m_RunAway = value;
-                
-        //        if (!value)
-        //        {
-        //            ClearDestination(DestType.RunAway);
-
-        //            // all other "destination" updates will be handled by navigator
-        //            if (m_Navmesh.Explorator != null)
-        //                m_Navmesh.Explorator.RequestExplorationUpdate();
-        //        }
-        //    }
-        //}
 
         public GridCell GetCurrentGridCell()
         {
             using (new ReadLock(InputLock))
                 return m_Navmesh.GetGridCell(m_CurrentPos);
         }
-
-        //public Vec3 GetNearestGridCellOutsideAvoidAreas()
-        //{
-        //    using (new ReadLock(m_Navmesh.DataLock))
-        //    using (new ReadLock(RegionsDataLock))
-        //    {
-        //        return Algorihms.GetRunAwayPosition(m_Navmesh.m_GridCells, m_Regions, m_CurrentPos, 200, MovementFlags);
-        //    }
-        //}
 
         public Int64 dbg_GetAntiStuckPrecisionTimerTime()
         {
@@ -482,6 +443,8 @@ namespace Nav
         public void Dispose()
         {
             UpdatesThread.Abort();
+
+            m_Navmesh.RemoveObserver(this);
         }
 
         // Aquires InputLock (read -> write)
@@ -502,7 +465,7 @@ namespace Nav
             }
         }
 
-        internal void Clear()
+        public void Clear()
         {
             using (new WriteLock(InputLock))
             using (new WriteLock(PathLock))
@@ -586,12 +549,9 @@ namespace Nav
 
             while (true)
             {
-                using (new ReadLock(InputLock, true))
-                {
-                    UpdateWaypointDestination();
-                    UpdateGridDestination();
-                    UpdateBackTrackDestination();
-                }
+                UpdateWaypointDestination();
+                UpdateGridDestination();
+                UpdateBackTrackDestination();
 
                 long time = timer.ElapsedMilliseconds;
                 int update_path_interval = m_UpdatePathIntervalOverride > 0 ? m_UpdatePathIntervalOverride : UpdatePathInterval;
@@ -679,14 +639,18 @@ namespace Nav
         private void UpdateGridDestination()
         {
             Vec3 destination = Vec3.Empty;
+            List<int> destination_grids_id = null;
 
-            if (m_DestinationGridsId.Count > 0)
+            using (new ReadLock(InputLock))
+                destination_grids_id = new List<int>(m_DestinationGridsId);
+
+            if (destination_grids_id.Count > 0)
             {
                 using (m_Navmesh.AquireReadDataLock())
                 {
                     GridCell current_grid = m_Navmesh.m_GridCells.Find(g => g.Contains2D(CurrentPos));
 
-                    GridCell destination_grid = m_Navmesh.m_GridCells.Find(g => m_DestinationGridsId.Contains(g.Id) && Algorihms.AreConnected(current_grid, ref g, MovementFlag.None));
+                    GridCell destination_grid = m_Navmesh.m_GridCells.Find(g => destination_grids_id.Contains(g.Id) && Algorihms.AreConnected(current_grid, ref g, MovementFlag.None));
 
                     if (destination_grid != null)
                         destination = m_Navmesh.GetNearestCell(destination_grid.Cells, destination_grid.Center).Center;
@@ -699,15 +663,30 @@ namespace Nav
 
         private void UpdateBackTrackDestination()
         {
-            if (BackTrackEnabled)
-                SetDestination(m_DestinationsHistory[m_HistoryDestId], DestType.BackTrack);
+            Vec3 destination = Vec3.Empty;
+
+            using (new ReadLock(InputLock))
+            {
+                if (BackTrackEnabled)
+                    destination = m_DestinationsHistory[m_HistoryDestId];
+            }
+
+            if (!destination.IsEmpty)
+                SetDestination(destination, DestType.BackTrack);
         }
 
         private void UpdateWaypointDestination()
         {
-            
-            if (m_Waypoints.Count > 0)
-                SetDestination(m_Waypoints[0], DestType.Waypoint);
+            Vec3 destination = Vec3.Empty;
+
+            using (new ReadLock(InputLock))
+            {
+                if (m_Waypoints.Count > 0)
+                    destination = m_Waypoints[0];
+            }
+
+            if (!destination.IsEmpty)
+                SetDestination(destination, DestType.Waypoint);
         }
 
         private float GetPrecision()
@@ -722,14 +701,14 @@ namespace Nav
                 switch (m_DestinationType)
                 {
                     case DestType.Grid:
-                        precision = GridCellPrecision;
+                        precision = GridDestPrecision;
                         break;
                     case DestType.Explore:
-                        precision = ExploreCellPrecision;
+                        precision = ExploreDestPrecision;
                         break;
                     case DestType.BackTrack:
                         // sometimes when grid or explore cell was just reached, back trace might lead us forward instead of backwards
-                        precision = Math.Max(GridCellPrecision, ExploreCellPrecision) + 5;
+                        precision = Math.Max(GridDestPrecision, ExploreDestPrecision) + 5;
                         break;
                 }
             }
@@ -782,8 +761,7 @@ namespace Nav
                             m_DestinationsHistory.Add(reached_pos);
                         }
 
-                        foreach (NavigationObserver listener in m_Listeners)
-                            listener.OnDestinationReached(m_DestinationType, m_Destination);
+                        NotifyOnDestinationReached(m_DestinationType, m_Destination);
 
                         m_Navmesh.Log("[Nav] Dest " + m_Destination + " [" + m_DestinationType + "] reached!");
                     }
@@ -809,9 +787,6 @@ namespace Nav
                         if (!BackTrackEnabled)
                             ClearDestination(DestType.BackTrack);
                     }
-
-                    if (IsDestinationReached(DestType.Explore) && m_Navmesh.Explorator != null)
-                        m_Navmesh.Explorator.RequestExplorationUpdate();
                 }
             }
         }
@@ -841,8 +816,7 @@ namespace Nav
 
                 m_Navmesh.Log("[Nav] Dest " + dest + " [" + dest_type + "] reach failed!");
 
-                foreach (NavigationObserver listener in m_Listeners)
-                    listener.OnDestinationReachFailed(dest_type, dest);
+                NotifyOnDestinationReachFailed(dest_type, dest);
 
                 ResetDestReachFailed();
             }
@@ -979,7 +953,64 @@ namespace Nav
             }
         }
 
-        internal void Serialize(BinaryWriter w)
+        public virtual void OnGridCellAdded(GridCell grid_cell)
+        {
+        }
+
+        public virtual void OnNavDataChanged()
+        {
+            RequestPathUpdate();
+        }
+
+        public virtual void OnNavDataCleared()
+        {
+            Clear();
+        }
+
+        protected void NotifyOnHugeCurrentPosChange()
+        {
+            List<NavigationObserver> observers_copy = null;
+
+            using (new ReadLock(InputLock))
+                observers_copy = m_Observers.ToList();
+
+            foreach (NavigationObserver observer in observers_copy)
+                observer.OnHugeCurrentPosChange();
+        }
+
+        protected void NotifyOnDestinationReached(DestType type, Vec3 dest)
+        {
+            List<NavigationObserver> observers_copy = null;
+
+            using (new ReadLock(InputLock))
+                observers_copy = m_Observers.ToList();
+
+            foreach (NavigationObserver observer in observers_copy)
+                observer.OnDestinationReached(type, dest);
+        }
+
+        protected void NotifyOnDestinationReachFailed(DestType type, Vec3 dest)
+        {
+            List<NavigationObserver> observers_copy = null;
+
+            using (new ReadLock(InputLock))
+                observers_copy = m_Observers.ToList();
+
+            foreach (NavigationObserver observer in observers_copy)
+                observer.OnDestinationReachFailed(type, dest);
+        }
+
+        // Extension will be automatically added
+        public void Serialize(string name)
+        {
+            using (FileStream fs = File.OpenWrite(name + ".navigator"))
+            using (BinaryWriter w = new BinaryWriter(fs))
+            {
+                OnSerialize(w);
+            }
+        }
+
+        protected virtual void OnSerialize(BinaryWriter w)
         {
             using (new ReadLock(InputLock))
             using (new ReadLock(PathLock))
@@ -1019,7 +1050,17 @@ namespace Nav
             }
         }
 
-        internal void Deserialize(List<Cell> all_cells, BinaryReader r)
+        // Extension will be automatically added
+        public void Deserialize(string name)
+        {
+            using (FileStream fs = File.OpenRead(name + ".navigator"))
+            using (BinaryReader r = new BinaryReader(fs))
+            {                
+                OnDeserialize(r);
+            }
+        }
+
+        protected virtual void OnDeserialize(BinaryReader r)
         {
             using (new WriteLock(InputLock))
             using (new WriteLock(PathLock))
@@ -1104,7 +1145,7 @@ namespace Nav
         private Vec3 m_Destination = Vec3.Empty; //@ InputLock
         private DestType m_DestinationType = DestType.None; //@ InputLock
 
-        private List<NavigationObserver> m_Listeners = new List<NavigationObserver>();
+        private List<NavigationObserver> m_Observers = new List<NavigationObserver>(); //@ InputLock
         
         private Navmesh m_Navmesh = null;
     }

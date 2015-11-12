@@ -38,8 +38,10 @@ namespace Nav
             if (cell.AABB.Area < MIN_CELL_AREA_TO_CONSIDER)
                 return false;
 
+            Vec3 border_point = null;
+
             foreach (Cell our_cell in Cells)
-                our_cell.AddNeighbour(cell);
+                our_cell.AddNeighbour(cell, out border_point);
 
             Cells.Add(cell);
 
@@ -72,7 +74,9 @@ namespace Nav
             {
                 foreach (Cell other_cell in grid_cell.Cells)
                 {
-                    bool cells_connected = our_cell.AddNeighbour(other_cell);
+                    Vec3 border_point = null;
+
+                    bool cells_connected = our_cell.AddNeighbour(other_cell, out border_point);
 
                     if (cells_connected)
                     {
@@ -92,6 +96,7 @@ namespace Nav
             }
         }
 
+        // Only replacement cells should be removed
         internal void Remove(Cell cell)
         {
             cell.Detach();

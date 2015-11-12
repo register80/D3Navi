@@ -55,8 +55,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Cell.cs" />
+    <Compile Include="CellsPatch.cs" />
     <Compile Include="Exploration\ExploreCell.cs" />
-    <Compile Include="Exploration\TSP.cs" />
     <Compile Include="Exploration\Nearest.cs" />
     <Compile Include="GridCell.cs" />
     <Compile Include="Exploration\ExplorationEngine.cs" />
@@ -70,6 +70,7 @@
     <Compile Include="NavigationEngine.cs" />
     <Compile Include="NavigationObserver.cs" />
     <Compile Include="Navmesh.cs" />
+    <Compile Include="NavmeshObserver.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

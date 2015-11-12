@@ -8,13 +8,7 @@ using System.Globalization;
 using System.Threading;
 using System.IO;
 using System.Runtime.InteropServices;
-using Enigma.D3;
-using Enigma.D3.Memory;
-using Enigma.D3.Helpers;
-using Enigma.D3.Collections;
-using Enigma.D3.Enums;
 using Nav;
-using Nav.D3;
 
 namespace NavMeshViewer
 {
@@ -24,66 +18,36 @@ namespace NavMeshViewer
         {
             InitializeComponent();
 
-            engine = Engine.Create();
-
             BackColor = Color.LightGray;
-            
-            m_Navmesh = Nav.D3.Navmesh.Create(engine, new Nav.ExploreEngine.Nearest(), true);
-            m_Navmesh.RegionsMoveCostMode = Nav.Navmesh.RegionsMode.Mult;
-            //m_Navmesh = Nav.D3.Navmesh.Create(engine, null, false);
-            //m_Navmesh.Navigator.UpdatePathInterval = 500;
-            //m_Navmesh.Navigator.MovementFlags = MovementFlag.Fly;
-            //m_Navmesh.Navigator.PathNodesShiftDist = 0;
-            
-            //m_Navmesh.AllowedAreasSnoId = new List<int>() { 19837 };
 
+            CreateNavigation();
             LoadDebugConfig();
 
-            if (engine == null)
+            if (args.Length == 1)
             {
-                if (args.Length == 1)
-                {
-                    string[] files = args[0].Split('#');
+                string[] files = args[0].Split('#');
 
-                    foreach (string file in files)
-                        LoadData(file, files.Length == 1);
-                }
-
-                m_Navmesh.Explorator.Enabled = false;
-            }
-            else
-            {
-                m_Navmesh.Explorator.Enabled = false;
-                auto_clear_navmesh = true;
+                foreach (string file in files)
+                    LoadData(file, files.Length == 1);
             }
         }
 
-        private void LoadDebugConfig()
+        protected virtual void CreateNavigation()
+        {
+            m_Navmesh = new Nav.Navmesh(false);
+            m_Navigator = new Nav.NavigationEngine(m_Navmesh);
+            m_Navmesh.RegionsMoveCostMode = Nav.Navmesh.RegionsMode.Mult;
+            m_Explorer = new Nav.ExploreEngine.Nearest(m_Navmesh, m_Navigator);
+            m_Explorer.Enabled = false;
+        }
+
+        protected virtual void LoadDebugConfig()
         {
             Ini.IniFile debug_ini = new Ini.IniFile("./debug.ini");
 
-            string[] allowed_areas_sno_id_str = debug_ini.IniReadValue("Navmesh", "allowed_areas_sno_id").Split(',');
-            List<int> allowed_areas_sno_id = new List<int>();
-            foreach (string id in allowed_areas_sno_id_str)
-            {
-                if (id.Length > 0)
-                    allowed_areas_sno_id.Add(int.Parse(id));
-            }
-            m_Navmesh.AllowedAreasSnoId = allowed_areas_sno_id;
-
-            string[] allowed_grid_cells_id_str = debug_ini.IniReadValue("Navmesh", "allowed_grid_cells_id").Split(',');
-            List<int> allowed_grid_cells_id = new List<int>();
-            foreach (string id in allowed_grid_cells_id_str)
-            {
-                if (id.Length > 0)
-                    allowed_grid_cells_id.Add(int.Parse(id));
-            }
-            m_Navmesh.AllowedGridCellsId = allowed_grid_cells_id;
-
-            m_Navmesh.Navigator.UpdatePathInterval = int.Parse(debug_ini.IniReadValue("Navigator", "update_path_interval"));
-            m_Navmesh.Navigator.MovementFlags = (MovementFlag)Enum.Parse(typeof(MovementFlag), debug_ini.IniReadValue("Navigator", "movement_flags"));
-            m_Navmesh.Navigator.PathNodesShiftDist = float.Parse(debug_ini.IniReadValue("Navigator", "path_nodes_shift_dist"));
-            
+            m_Navigator.UpdatePathInterval = int.Parse(debug_ini.IniReadValue("Navigator", "update_path_interval"));
+            m_Navigator.MovementFlags = (MovementFlag)Enum.Parse(typeof(MovementFlag), debug_ini.IniReadValue("Navigator", "movement_flags"));
+            m_Navigator.PathNodesShiftDist = float.Parse(debug_ini.IniReadValue("Navigator", "path_nodes_shift_dist"));
         }
 
         private void OnLoad(object sender, EventArgs e)
@@ -95,67 +59,46 @@ namespace NavMeshViewer
         private void OnClosing(object sender, FormClosingEventArgs e)
         {
             m_Navmesh.Dispose();
+            m_Navigator.Dispose();
+            m_Explorer.Dispose();
         }
 
-        private float m_LastMaxMoveCostMult = 1;
+        protected class LegendEntry
+        {
+            public LegendEntry(string text, bool toggleable, bool toggled = false) { this.text = text; this.toggleable = toggleable;  this.toggled = toggled; }
 
-        private void Render(object sender, PaintEventArgs e)
+            public string text;
+            public bool toggleable;
+            public bool toggled;
+        }
+
+        protected virtual void ModifyRenderMatrix(ref Matrix m)
+        {            
+        }
+
+        // Everything inside this method is rendered with transformation resulting from ModifyRenderMatrix.
+        protected virtual void OnRenderData(PaintEventArgs e)
         {
             try
             {
-                int location = -1;
-
-                if (engine != null)
-                {
-                    LevelArea level_area = Engine.Current.LevelArea;
-                    if (level_area != null)
-                        location = level_area.x044_SnoId;
-                }
-
-                if (last_location != location)
-                {
-                    if (auto_clear_navmesh)
-                    {
-                        m_Navmesh.Clear();
-                        LoadDebugConfig();
-                    }
-                    last_location = location;
-                }
-
-                Matrix m = new Matrix();
-                m.Scale(render_scale, render_scale);
-                m.Translate((Width - 16) / (2 * render_scale), (Height - 30) / (2 * render_scale));
-
-                // when Diablo is running display navmesh in the same manner as Diablo does
-                if (engine != null)
-                {
-                    m.Rotate(135);
-                    Matrix flip_x_m = new Matrix(1, 0, 0, -1, 0, 0);
-                    m.Multiply(flip_x_m);
-                }
-
-                e.Graphics.Transform = m;
-                e.Graphics.CompositingQuality = CompositingQuality.GammaCorrected;
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-
                 int cells_count = 0;
                 int grid_cells_count = 0;
 
-                if (render_grids || render_cells)
+                if (m_RenderGrids || m_RenderCells)
                 {
                     using (m_Navmesh.AquireReadDataLock())
                     {
                         List<GridCell> grid_cells = m_Navmesh.dbg_GetGridCells();
 
-                        if (render_grids)
+                        if (m_RenderGrids)
                         {
                             foreach (Nav.GridCell grid_cell in grid_cells)
-                                RenderHelper.Render(grid_cell, render_center, e, render_connections, render_id);
+                                RenderHelper.Render(grid_cell, m_RenderCenter, e, m_RenderConnections, m_RenderIds);
 
                             grid_cells_count = grid_cells.Count;
                         }
 
-                        if (render_cells)
+                        if (m_RenderCells)
                         {
                             float max_move_cost_mult = 1;
 
@@ -163,7 +106,7 @@ namespace NavMeshViewer
                             {
                                 foreach (Nav.Cell cell in grid_cell.Cells)
                                 {
-                                    RenderHelper.Render(cell, render_center, e, render_connections, render_id, m_LastMaxMoveCostMult);
+                                    RenderHelper.Render(cell, m_RenderCenter, e, m_RenderConnections, m_RenderIds, m_LastMaxMoveCostMult);
                                     max_move_cost_mult = Math.Max(max_move_cost_mult, cell.MovementCostMult);
                                 }
 
@@ -175,168 +118,419 @@ namespace NavMeshViewer
                     }
                 }
 
-                if (render_explore_cells || render_explore_dist)
+                if (m_RenderExploreCells || m_RenderExploreDist)
                 {
-                    using (m_Navmesh.Explorator.AquireReadDataLock())
+                    using (m_Explorer.AquireReadDataLock())
                     {
-                        List<ExploreCell> explore_cells = m_Navmesh.Explorator.dbg_GetExploreCells();
+                        List<ExploreCell> explore_cells = m_Explorer.dbg_GetExploreCells();
 
-                        if (render_explore_cells)
+                        if (m_RenderExploreCells)
                         {
                             foreach (Nav.ExploreCell explore_cell in explore_cells)
-                                RenderHelper.Render(explore_cell, m_Navmesh.Navigator.ExploreCellPrecision, render_center, e, render_connections, render_id);
+                                RenderHelper.Render(explore_cell, m_Navigator.ExploreDestPrecision, m_RenderCenter, e, m_RenderConnections, m_RenderIds);
                         }
 
-                        if (render_explore_dist)
+                        if (m_RenderExploreDist)
                         {
-                            if (explore_cells.Exists(c => c.Id == explore_cell_id_to_render_dists))
-                                RenderHelper.Render(m_Navmesh, explore_cells.Find(c => c.Id == explore_cell_id_to_render_dists), render_center, e, render_id);
+                            if (explore_cells.Exists(c => c.Id == m_ExploreCellIdToRenderDists))
+                                RenderHelper.Render(m_Navmesh, explore_cells.Find(c => c.Id == m_ExploreCellIdToRenderDists), explore_cells, m_RenderCenter, e, m_RenderIds);
                         }
                     }
                 }
 
-                if (render_regions)
+                if (m_RenderRegions)
                 {
                     var regions = m_Navmesh.Regions;
 
                     foreach (var region in regions)
-                        RenderHelper.DrawRectangle(e.Graphics, Pens.Black, render_center, region.area.Min, region.area.Max);
+                        RenderHelper.DrawRectangle(e.Graphics, Pens.Black, m_RenderCenter, region.area.Min, region.area.Max);
 
-                    //Vec3 safe_point = m_Navmesh.Navigator.GetNearestGridCellOutsideAvoidAreas();
+                    //Vec3 safe_point = m_Navigator.GetNearestGridCellOutsideAvoidAreas();
 
                     //if (!safe_point.IsEmpty)
                     //    RenderHelper.DrawPoint(e.Graphics, Pens.Green, render_center, safe_point);
                 }
 
-                if (render_axis)
+                if (m_RenderAxis)
                 {
-                    e.Graphics.DrawString("X", new Font("Arial", 6 / render_scale), Brushes.Black, 25 / render_scale, 0);
-                    e.Graphics.DrawLine(RenderHelper.AXIS_PEN, -25 / render_scale, 0, 25 / render_scale, 0);
-                    e.Graphics.DrawString("Y", new Font("Arial", 6 / render_scale), Brushes.Black, 0, 25 / render_scale);
-                    e.Graphics.DrawLine(RenderHelper.AXIS_PEN, 0, -25 / render_scale, 0, 25 / render_scale);
+                    e.Graphics.DrawString("X", new Font("Arial", 6 / m_RenderScale), Brushes.Black, 25 / m_RenderScale, 0);
+                    e.Graphics.DrawLine(RenderHelper.AXIS_PEN, -25 / m_RenderScale, 0, 25 / m_RenderScale, 0);
+                    e.Graphics.DrawString("Y", new Font("Arial", 6 / m_RenderScale), Brushes.Black, 0, 25 / m_RenderScale);
+                    e.Graphics.DrawLine(RenderHelper.AXIS_PEN, 0, -25 / m_RenderScale, 0, 25 / m_RenderScale);
                 }
 
-                if (render_explore_cells && m_Navmesh.Explorator is Nav.ExploreEngine.TSP)
-                {
-                    ((Nav.ExploreEngine.TSP)m_Navmesh.Explorator).TryGetExplorePath(ref last_explore_path);
-                    RenderHelper.DrawLines(e.Graphics, RenderHelper.EXPLORE_PATH_PEN, render_center, last_explore_path, 1);
-                }
-
-                if (!render_original_path && render_path)
+                if (!m_RenderOriginalPath && m_RenderPath)
                 {
                     DestType last_path_dest_type = DestType.None;
-                    if (m_Navmesh.Navigator.TryGetPath(ref last_path, ref last_path_dest_type))
-                        last_path.Insert(0, m_Navmesh.Navigator.CurrentPos);
-                    RenderHelper.DrawLines(e.Graphics, RenderHelper.PATH_PEN, render_center, last_path, 1);
+                    if (m_Navigator.TryGetPath(ref m_LastPath, ref last_path_dest_type))
+                        m_LastPath.Insert(0, m_Navigator.CurrentPos);
+                    RenderHelper.DrawLines(e.Graphics, RenderHelper.PATH_PEN, m_RenderCenter, m_LastPath, 1);
                 }
 
-                if (render_backtrack_path)
+                if (m_RenderBacktrackPath)
                 {
-                    if (m_Navmesh.Navigator.TryGetBackTrackPath(ref last_back_track_path))
-                        last_back_track_path.Insert(0, m_Navmesh.Navigator.CurrentPos);
-                    RenderHelper.DrawLines(e.Graphics, Pens.Blue, render_center, last_back_track_path, 1);
+                    if (m_Navigator.TryGetBackTrackPath(ref m_LastBacktrackPath))
+                        m_LastBacktrackPath.Insert(0, m_Navigator.CurrentPos);
+                    RenderHelper.DrawLines(e.Graphics, Pens.Blue, m_RenderCenter, m_LastBacktrackPath, 1);
                 }
 
-                if (render_positions_history)
+                if (m_RenderPositionsHistory)
                 {
-                    m_Navmesh.Navigator.TryGetDebugPositionsHistory(ref last_positions_history);
-                    RenderHelper.DrawLines(e.Graphics, Pens.Green, render_center, last_positions_history, 1);
+                    m_Navigator.TryGetDebugPositionsHistory(ref m_LastPositionsHistory);
+                    RenderHelper.DrawLines(e.Graphics, Pens.Green, m_RenderCenter, m_LastPositionsHistory, 1);
                 }
 
-                if (!m_Navmesh.Navigator.CurrentPos.IsEmpty)
-                    RenderHelper.DrawPoint(e.Graphics, Pens.Blue, render_center, m_Navmesh.Navigator.CurrentPos);
-                if (!m_Navmesh.Navigator.Destination.IsEmpty)
-                    RenderHelper.DrawPoint(e.Graphics, Pens.LightBlue, render_center, m_Navmesh.Navigator.Destination);
+                if (!m_Navigator.CurrentPos.IsEmpty)
+                    RenderHelper.DrawPoint(e.Graphics, Pens.Blue, m_RenderCenter, m_Navigator.CurrentPos);
+                if (!m_Navigator.Destination.IsEmpty)
+                    RenderHelper.DrawPoint(e.Graphics, Pens.LightBlue, m_RenderCenter, m_Navigator.Destination);
 
                 {
-                    Vec3 curr = m_Navmesh.Navigator.CurrentPos;
-                    Vec3 dest = m_Navmesh.Navigator.Destination;
+                    Vec3 curr = m_Navigator.CurrentPos;
+                    Vec3 dest = m_Navigator.Destination;
 
                     if (!curr.IsEmpty && !dest.IsEmpty)
                     {
-                        if (render_original_path)
+                        if (m_RenderOriginalPath)
                         {
                             List<Vec3> path = new List<Vec3>();
-                            m_Navmesh.Navigator.FindPath(curr, dest, MovementFlag.Walk, ref path, -1, false, false, 0, false, 0, false);
+                            m_Navigator.FindPath(curr, dest, MovementFlag.Walk, ref path, -1, false, false, 0, false, 0, false);
                             path.Insert(0, curr);
-                            RenderHelper.DrawLines(e.Graphics, Pens.Black, render_center, path, 1);
+                            RenderHelper.DrawLines(e.Graphics, Pens.Black, m_RenderCenter, path, 1);
                         }
 
-                        if (render_ray_cast)
-                            RenderHelper.DrawLine(e.Graphics, m_Navmesh.RayCast2D(curr, dest, MovementFlag.Walk) ? Pens.Green : Pens.Red, render_center, curr, dest);
+                        if (m_RenderRayCast)
+                            RenderHelper.DrawLine(e.Graphics, m_Navmesh.RayCast2D(curr, dest, MovementFlag.Walk) ? Pens.Green : Pens.Red, m_RenderCenter, curr, dest);
                     }
                 }
 
-                if (waypoints_paths.Count > 0)
+                if (m_WaypointsPaths.Count > 0)
                 {
                     int waypoint_id = 1;
-                    foreach (List<Vec3> p in waypoints_paths)
+                    foreach (List<Vec3> p in m_WaypointsPaths)
                     {
                         if (p.Count > 0)
                         {
-                            RenderHelper.DrawCircle(e.Graphics, Pens.Black, render_center, p[0], 3);
-                            RenderHelper.DrawString(e.Graphics, Brushes.Black, render_center, p[0], waypoint_id.ToString(), 10);
+                            RenderHelper.DrawCircle(e.Graphics, Pens.Black, m_RenderCenter, p[0], 3);
+                            RenderHelper.DrawString(e.Graphics, Brushes.Black, m_RenderCenter, p[0], waypoint_id.ToString(), 10);
                         }
-                        RenderHelper.DrawLines(e.Graphics, Pens.Red, render_center, p, 1);
+                        RenderHelper.DrawLines(e.Graphics, Pens.Red, m_RenderCenter, p, 1);
                         ++waypoint_id;
                     }
                 }
 
-                if (bot != null)
+                if (m_Bot != null)
                 {
-                    if (!bot.Paused && center_on_bot)
-                        render_center = new PointF(bot.Position.X, bot.Position.Y);
-                    bot.Render(e.Graphics, render_center);
+                    //if (!m_Bot.Paused && m_CenterOnBot)
+                    //    m_RenderCenter = new PointF(m_Bot.Position.X, m_Bot.Position.Y);
+                    m_Bot.Render(e.Graphics, m_RenderCenter);
                 }
-
-                e.Graphics.ResetTransform();
-
-                Font legend_font = new Font("Arial", 8, FontStyle.Bold);
-                Font stats_font = new Font("Arial", 8);
-
-                TextRenderer.DrawText(e.Graphics, "L: Toggle render legend", legend_font, new Point(10, 10), render_legend ? Color.White : Color.Black, render_legend ? Color.Black : Color.Transparent);
-
-                if (render_legend)
-                {
-                    e.Graphics.DrawString("F1: Reload waypoints", legend_font, Brushes.Black, 10, 25);
-                    e.Graphics.DrawString("F2: Reload nav data", legend_font, Brushes.Black, 10, 40);
-                    e.Graphics.DrawString("F3: Dump nav data", legend_font, Brushes.Black, 10, 55);
-                    e.Graphics.DrawString("F4: Clear nav data", legend_font, Brushes.Black, 10, 70);
-                    e.Graphics.DrawString("F5: Serialize nav data", legend_font, Brushes.Black, 10, 85);
-                    e.Graphics.DrawString("F6: Deserialize nav data", legend_font, Brushes.Black, 10, 100);
-                    e.Graphics.DrawString("F10: Activate some test", legend_font, Brushes.Black, 10, 115);
-                    TextRenderer.DrawText(e.Graphics, "1: Toggle render grid cells", legend_font, new Point(10, 130), render_grids ? Color.White : Color.Black, render_grids ? Color.Black : Color.Transparent);                    
-                    TextRenderer.DrawText(e.Graphics, "2: Toggle render cells", legend_font, new Point(10, 145), render_cells ? Color.White : Color.Black, render_cells ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "3: Toggle render explore cells", legend_font, new Point(10, 160), render_explore_cells ? Color.White : Color.Black, render_explore_cells ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "4: Toggle render connections", legend_font, new Point(10, 175), render_connections ? Color.White : Color.Black, render_connections ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "5: Toggle render IDs", legend_font, new Point(10, 190), render_id ? Color.White : Color.Black, render_id ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "6: Toggle render axis", legend_font, new Point(10, 205), render_axis ? Color.White : Color.Black, render_axis ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "7: Toggle render regions", legend_font, new Point(10, 220), render_regions ? Color.White : Color.Black, render_regions ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "8: Toggle render original path", legend_font, new Point(10, 235), render_original_path ? Color.White : Color.Black, render_original_path ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "9: Toggle render ray cast", legend_font, new Point(10, 250), render_ray_cast ? Color.White : Color.Black, render_ray_cast ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "0: Toggle render back track path", legend_font, new Point(10, 265), render_backtrack_path ? Color.White : Color.Black, render_backtrack_path ? Color.Black : Color.Transparent);
-                    e.Graphics.DrawString("S: Set current pos", legend_font, Brushes.Black, 10, 280);
-                    e.Graphics.DrawString("E: Set destination pos", legend_font, Brushes.Black, 10, 295);
-                    e.Graphics.DrawString("B: Run bot", legend_font, Brushes.Black, 10, 310);
-                    TextRenderer.DrawText(e.Graphics, "A: Toggle auto clear navmesh", legend_font, new Point(10, 325), auto_clear_navmesh ? Color.White : Color.Black, auto_clear_navmesh ? Color.Black : Color.Transparent);
-                    e.Graphics.DrawString("F7: Reload debug.ini", legend_font, Brushes.Black, 10, 340);
-                    TextRenderer.DrawText(e.Graphics, "Ctrl+1: Toggle render path", legend_font, new Point(10, 355), render_path ? Color.White : Color.Black, render_path ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "Ctrl+2: Toggle regions", legend_font, new Point(10, 370), m_Navmesh.RegionsEnabled ? Color.White : Color.Black, m_Navmesh.RegionsEnabled ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "Ctrl+3: Toggle danger regions", legend_font, new Point(10, 385), m_Navmesh.DangerRegionsEnabled ? Color.White : Color.Black, m_Navmesh.DangerRegionsEnabled ? Color.Black : Color.Transparent);
-                    TextRenderer.DrawText(e.Graphics, "Ctrl+4: Toggle render positions history", legend_font, new Point(10, 400), render_positions_history ? Color.White : Color.Black, render_positions_history ? Color.Black : Color.Transparent);
-                }
-
-                e.Graphics.DrawString("Cells count: " + cells_count, stats_font, Brushes.Black, 10, Height - 55);
             }
             catch (Exception)
             {
             }
         }
 
+        protected virtual void OnRenderUI(PaintEventArgs e)
+        {
+            Font legend_font = new Font("Arial", 8, FontStyle.Bold);
+            Font stats_font = new Font("Arial", 8);
+
+            TextRenderer.DrawText(e.Graphics, "L: Toggle render legend", legend_font, new Point(10, 10), m_RenderLegend ? Color.White : Color.Black, m_RenderLegend ? Color.Black : Color.Transparent);
+
+            if (m_RenderLegend)
+            {
+                List<LegendEntry> legend = new List<LegendEntry>();
+                AddLegendEntries(ref legend);
+
+                const int Y_offset = 15;
+
+                for (int i = 0; i < legend.Count; ++i)
+                {
+                    int Y = 10 + (i + 1) * Y_offset;
+                    if (legend[i].toggleable)
+                        TextRenderer.DrawText(e.Graphics, legend[i].text, legend_font, new Point(10, Y), legend[i].toggled ? Color.White : Color.Black, legend[i].toggled ? Color.Black : Color.Transparent);
+                    else
+                        e.Graphics.DrawString(legend[i].text, legend_font, Brushes.Black, 10, Y);
+                }
+            }
+
+            //e.Graphics.DrawString("Cells count: " + cells_count, stats_font, Brushes.Black, 10, Height - 55);
+        }
+
+        protected virtual void OnRefresh(int interval)
+        {
+            if (m_Bot != null)
+                m_Bot.Update(interval * 0.001f);
+        }
+
+        protected virtual void OnKey(KeyEventArgs e)
+        {
+            if (e.Control)
+            {
+                if (e.KeyCode == System.Windows.Forms.Keys.D1)
+                {
+                    m_RenderPath = !m_RenderPath;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D2)
+                {
+                    m_Navmesh.RegionsEnabled = !m_Navmesh.RegionsEnabled;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D4)
+                {
+                    m_RenderPositionsHistory = !m_RenderPositionsHistory;
+                    e.Handled = true;
+                }
+            }
+            else
+            {
+                if (e.KeyCode == System.Windows.Forms.Keys.S)
+                {
+                    Vec3 result = null;
+                    m_Navmesh.RayTrace(new Vec3(m_RenderCenter.X, m_RenderCenter.Y, 1000),
+                                       new Vec3(m_RenderCenter.X, m_RenderCenter.Y, -1000),
+                                       MovementFlag.Walk,
+                                       out result);
+
+                    if (result.IsEmpty)
+                        result = new Vec3(m_RenderCenter.X, m_RenderCenter.Y, 0);
+
+                    m_Navigator.CurrentPos = result;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.E)
+                {
+                    Vec3 result = null;
+                    m_Navmesh.RayTrace(new Vec3(m_RenderCenter.X, m_RenderCenter.Y, 1000),
+                                       new Vec3(m_RenderCenter.X, m_RenderCenter.Y, -1000),
+                                       MovementFlag.Walk,
+                                       out result);
+
+                    if (result.IsEmpty)
+                        result = new Vec3(m_RenderCenter.X, m_RenderCenter.Y, 0);
+
+                    m_Navigator.Destination = result;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.L)
+                {
+                    m_RenderLegend = !m_RenderLegend;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D1)
+                {
+                    m_RenderGrids = !m_RenderGrids;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D2)
+                {
+                    m_RenderCells = !m_RenderCells;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D3)
+                {
+                    m_RenderExploreCells = !m_RenderExploreCells;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D4)
+                {
+                    m_RenderConnections = !m_RenderConnections;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D5)
+                {
+                    m_RenderIds = !m_RenderIds;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D6)
+                {
+                    m_RenderAxis = !m_RenderAxis;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D7)
+                {
+                    //render_explore_dist = !render_explore_dist;
+                    m_RenderRegions = !m_RenderRegions;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D8)
+                {
+                    m_RenderOriginalPath = !m_RenderOriginalPath;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D9)
+                {
+                    m_RenderRayCast = !m_RenderRayCast;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D0)
+                {
+                    m_RenderBacktrackPath = !m_RenderBacktrackPath;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.F1)
+                {
+                    LoadWaypoints(m_LastWaypointsFile);
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.F2)
+                {
+                    LoadData(m_LastDataFile);
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.F3)
+                {
+                    m_Navmesh.Dump("nav_dump.txt");
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.F4)
+                {
+                    m_Navmesh.Clear();
+                    m_Navigator.Clear();
+                    m_Explorer.Clear();
+                    LoadDebugConfig();
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.F5)
+                {
+                    m_Navmesh.Serialize("nav_save");
+                    m_Navigator.Serialize("nav_save");
+                    m_Explorer.Serialize("nav_save");
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.F6)
+                {
+                    m_Navmesh.Deserialize("nav_save");
+                    m_Navigator.Deserialize("nav_save");
+                    m_Explorer.Deserialize("nav_save");
+
+                    Vec3 initial_pos = m_Navigator.CurrentPos;
+                    if (initial_pos.IsEmpty)
+                        initial_pos = m_Navmesh.GetCenter();
+                    m_RenderCenter.X = initial_pos.X;
+                    m_RenderCenter.Y = initial_pos.Y;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.F7)
+                {
+                    LoadDebugConfig();
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.F10)
+                {
+                    //Thread t = new Thread(dbg_ContiniousSerialize);
+                    //t.Start();
+
+                    Thread t = new Thread(dbg_MoveRegions);
+                    t.Start();
+
+                    //m_Navmesh.dbg_GenerateRandomAvoidAreas();
+
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.B)
+                {
+                    Vec3 result = null;
+                    m_Navmesh.RayTrace(new Vec3(m_RenderCenter.X, m_RenderCenter.Y, 1000),
+                                       new Vec3(m_RenderCenter.X, m_RenderCenter.Y, -1000),
+                                       MovementFlag.Walk,
+                                       out result);
+
+                    if (m_Bot != null)
+                        m_Bot.Dispose();
+                    m_Bot = new TestBot(m_Navmesh, m_Navigator, m_Explorer, result, m_Navigator.Destination, true, false);
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.C)
+                {
+                    m_CenterOnBot = !m_CenterOnBot;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.D)
+                {
+                    if (m_Bot != null)
+                        m_Bot.Destination = new Vec3(m_RenderCenter.X, m_RenderCenter.Y, 0);
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.H)
+                {
+                    if (m_Explorer != null)
+                        m_Explorer.HintPos = new Vec3(m_RenderCenter.X, m_RenderCenter.Y, 0);
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.X)
+                {
+                    m_Navigator.CurrentPos = new Vec3(m_RenderCenter.X, m_RenderCenter.Y, 0);
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.Space)
+                {
+                    if (m_Bot != null)
+                        m_Bot.Paused = !m_Bot.Paused;
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == System.Windows.Forms.Keys.V)
+                {
+                    if (m_Bot != null)
+                        m_Bot.BackTrace = !m_Bot.BackTrace;
+                    e.Handled = true;
+                }
+            }
+        }
+
+        protected virtual void AddLegendEntries(ref List<LegendEntry> legend)
+        {
+            legend.Add(new LegendEntry("F1: Reload waypoints", false));
+            legend.Add(new LegendEntry("F2: Reload nav data", false));
+            legend.Add(new LegendEntry("F3: Dump nav data", false));
+            legend.Add(new LegendEntry("F4: Clear nav data", false));
+            legend.Add(new LegendEntry("F5: Serialize nav data", false));
+            legend.Add(new LegendEntry("F6: Deserialize nav data", false));
+            legend.Add(new LegendEntry("F10: Activate some test", false));
+            legend.Add(new LegendEntry("1: Toggle render grid cells", true, m_RenderGrids));
+            legend.Add(new LegendEntry("2: Toggle render cells", true, m_RenderCells));
+            legend.Add(new LegendEntry("3: Toggle render explore cells", true, m_RenderExploreCells));
+            legend.Add(new LegendEntry("4: Toggle render connections", true, m_RenderConnections));
+            legend.Add(new LegendEntry("5: Toggle render IDs", true, m_RenderIds));
+            legend.Add(new LegendEntry("6: Toggle render axis", true, m_RenderAxis));
+            legend.Add(new LegendEntry("7: Toggle render regions", true, m_RenderRegions));
+            legend.Add(new LegendEntry("8: Toggle render original path", true, m_RenderOriginalPath));
+            legend.Add(new LegendEntry("9: Toggle render ray cast", true, m_RenderRayCast));
+            legend.Add(new LegendEntry("0: Toggle render back track path", true, m_RenderBacktrackPath));
+            legend.Add(new LegendEntry("S: Set current pos", false));
+            legend.Add(new LegendEntry("E: Set destination pos", false));
+            legend.Add(new LegendEntry("B: Run bot", false));            
+            legend.Add(new LegendEntry("F7: Reload debug.ini", false));
+            legend.Add(new LegendEntry("Ctrl+1: Toggle render path", true, m_RenderPath));
+            legend.Add(new LegendEntry("Ctrl+2: Toggle regions", true, m_Navmesh.RegionsEnabled));
+            legend.Add(new LegendEntry("Ctrl+4: Toggle render positions history", true, m_RenderPositionsHistory));
+        }
+
+        private void Render(object sender, PaintEventArgs e)
+        {
+            Matrix m = new Matrix();
+            m.Scale(m_RenderScale, m_RenderScale);
+            m.Translate((Width - 16) / (2 * m_RenderScale), (Height - 30) / (2 * m_RenderScale));
+
+            ModifyRenderMatrix(ref m);
+
+            e.Graphics.Transform = m;
+            e.Graphics.CompositingQuality = CompositingQuality.GammaCorrected;
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            OnRenderData(e);
+
+            e.Graphics.ResetTransform();
+
+            OnRenderUI(e);
+        }
+
         private void LoadWaypoints(string filename)
         {
-            last_waypoints_file = filename;
-            waypoints_paths.Clear();
+            m_LastWaypointsFile = filename;
+            m_WaypointsPaths.Clear();
 
             if (!File.Exists(filename))
                 return;
@@ -359,8 +553,8 @@ namespace NavMeshViewer
                         if (!last_wp.IsEmpty)
                         {
                             List<Vec3> path = new List<Vec3>();
-                            m_Navmesh.Navigator.FindPath(last_wp, wp, MovementFlag.Walk, ref path, -1, true, true);
-                            waypoints_paths.Add(path);
+                            m_Navigator.FindPath(last_wp, wp, MovementFlag.Walk, ref path, -1, true, true);
+                            m_WaypointsPaths.Add(path);
                         }
 
                         last_wp = wp;
@@ -371,16 +565,16 @@ namespace NavMeshViewer
 
         private void LoadData(string filename, bool clear = true)
         {
-            last_data_file = filename;
+            m_LastDataFile = filename;
 
             if (m_Navmesh.Load(filename, clear))
             {
-                Vec3 initial_pos = m_Navmesh.Navigator.CurrentPos;
+                Vec3 initial_pos = m_Navigator.CurrentPos;
                 if (initial_pos.IsEmpty)
                     initial_pos = m_Navmesh.GetCenter();
 
-                render_center.X = initial_pos.X;
-                render_center.Y = initial_pos.Y;
+                m_RenderCenter.X = initial_pos.X;
+                m_RenderCenter.Y = initial_pos.Y;
             }
         }
 
@@ -425,21 +619,7 @@ namespace NavMeshViewer
 
         private void refresh_timer_Tick(object sender, EventArgs e)
         {
-            if (bot != null)
-                bot.Update(refresh_timer.Interval * 0.001f);
-
-            if (m_Navmesh.IsUpdating)
-            {
-                Actor local_actor = ActorHelper.GetLocalActor();
-
-                if (local_actor == null)
-                    return;
-
-                render_center.X = local_actor.x0A8_WorldPosX;
-                render_center.Y = local_actor.x0AC_WorldPosY;
-
-                m_Navmesh.Navigator.CurrentPos = new Vec3(local_actor.x0A8_WorldPosX, local_actor.x0AC_WorldPosY, local_actor.x0B0_WorldPosZ);
-            }
+            OnRefresh(refresh_timer.Interval);
 
             Refresh();
         }
@@ -449,281 +629,68 @@ namespace NavMeshViewer
             if (!Control.MouseButtons.HasFlag(MouseButtons.Left))
                 return;
 
-            if (!last_drag_mouse_pos.IsEmpty)
+            if (!m_LastDragMousePos.IsEmpty)
             {
-                render_center.X += last_drag_mouse_pos.X - e.X;
-                render_center.Y += last_drag_mouse_pos.Y - e.Y;
+                m_RenderCenter.X += m_LastDragMousePos.X - e.X;
+                m_RenderCenter.Y += m_LastDragMousePos.Y - e.Y;
             }
 
-            last_drag_mouse_pos = new PointF(e.X, e.Y);
+            m_LastDragMousePos = new PointF(e.X, e.Y);
         }
 
         private void NavMeshViewer_MouseUp(object sender, MouseEventArgs e)
         {
-            last_drag_mouse_pos = PointF.Empty;
+            m_LastDragMousePos = PointF.Empty;
         }
 
         private void NavMeshViewer_MouseWheel(object sender, MouseEventArgs e)
         {
-            render_scale += e.Delta * 0.002f;
+            m_RenderScale += e.Delta * 0.002f;
 
-            render_scale = Math.Max(0.01f, Math.Min(100.0f, render_scale));
+            m_RenderScale = Math.Max(0.01f, Math.Min(100.0f, m_RenderScale));
         }
 
         private void NavMeshViewer_KeyPress(object sender, KeyEventArgs e)
         {
-            if (e.Control)
-            {
-                if (e.KeyCode == System.Windows.Forms.Keys.D1)
-                {
-                    render_path = !render_path;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D2)
-                {
-                    m_Navmesh.RegionsEnabled = !m_Navmesh.RegionsEnabled;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D3)
-                {
-                    m_Navmesh.DangerRegionsEnabled = !m_Navmesh.DangerRegionsEnabled;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D4)
-                {
-                    render_positions_history = !render_positions_history;
-                    e.Handled = true;
-                }
-            }
-            else
-            {
-                if (e.KeyCode == System.Windows.Forms.Keys.A)
-                {
-                    auto_clear_navmesh = !auto_clear_navmesh;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.S)
-                {
-                    Vec3 result = null;
-                    m_Navmesh.RayTrace(new Vec3(render_center.X, render_center.Y, 1000),
-                                       new Vec3(render_center.X, render_center.Y, -1000),
-                                       MovementFlag.Walk,
-                                       out result);
-
-                    if (result.IsEmpty)
-                        result = new Vec3(render_center.X, render_center.Y, 0);
-
-                    m_Navmesh.Navigator.CurrentPos = result;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.E)
-                {
-                    Vec3 result = null;
-                    m_Navmesh.RayTrace(new Vec3(render_center.X, render_center.Y, 1000),
-                                       new Vec3(render_center.X, render_center.Y, -1000),
-                                       MovementFlag.Walk,
-                                       out result);
-
-                    if (result.IsEmpty)
-                        result = new Vec3(render_center.X, render_center.Y, 0);
-
-                    m_Navmesh.Navigator.Destination = result;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.L)
-                {
-                    render_legend = !render_legend;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D1)
-                {
-                    render_grids = !render_grids;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D2)
-                {
-                    render_cells = !render_cells;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D3)
-                {
-                    render_explore_cells = !render_explore_cells;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D4)
-                {
-                    render_connections = !render_connections;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D5)
-                {
-                    render_id = !render_id;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D6)
-                {
-                    render_axis = !render_axis;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D7)
-                {
-                    //render_explore_dist = !render_explore_dist;
-                    render_regions = !render_regions;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D8)
-                {
-                    render_original_path = !render_original_path;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D9)
-                {
-                    render_ray_cast = !render_ray_cast;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D0)
-                {
-                    render_backtrack_path = !render_backtrack_path;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.F1)
-                {
-                    LoadWaypoints(last_waypoints_file);
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.F2)
-                {
-                    LoadData(last_data_file);
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.F3)
-                {
-                    m_Navmesh.Dump("nav_dump.txt");
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.F4)
-                {
-                    m_Navmesh.Clear();
-                    LoadDebugConfig();
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.F5)
-                {
-                    m_Navmesh.Serialize("nav_save.dat");
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.F6)
-                {
-                    m_Navmesh.Deserialize("nav_save.dat");
-
-                    Vec3 initial_pos = m_Navmesh.Navigator.CurrentPos;
-                    if (initial_pos.IsEmpty)
-                        initial_pos = m_Navmesh.GetCenter();
-                    render_center.X = initial_pos.X;
-                    render_center.Y = initial_pos.Y;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.F7)
-                {
-                    LoadDebugConfig();
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.F10)
-                {
-                    //Thread t = new Thread(dbg_ContiniousSerialize);
-                    //t.Start();
-
-                    Thread t = new Thread(dbg_MoveRegions);
-                    t.Start();
-
-                    //m_Navmesh.dbg_GenerateRandomAvoidAreas();
-
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.B)
-                {
-                    Vec3 result = null;
-                    m_Navmesh.RayTrace(new Vec3(render_center.X, render_center.Y, 1000),
-                                       new Vec3(render_center.X, render_center.Y, -1000),
-                                       MovementFlag.Walk,
-                                       out result);
-
-                    bot = new TestBot(m_Navmesh, result, m_Navmesh.Navigator.Destination, true, false);
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.C)
-                {
-                    center_on_bot = !center_on_bot;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.D)
-                {
-                    if (bot != null)
-                        bot.Destination = new Vec3(render_center.X, render_center.Y, 0);
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.H)
-                {
-                    if (m_Navmesh.Explorator != null)
-                        m_Navmesh.Explorator.HintPos = new Vec3(render_center.X, render_center.Y, 0);
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.X)
-                {
-                    m_Navmesh.Navigator.CurrentPos = new Vec3(render_center.X, render_center.Y, 0);
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.Space)
-                {
-                    if (bot != null)
-                        bot.Paused = !bot.Paused;
-                    e.Handled = true;
-                }
-                else if (e.KeyCode == System.Windows.Forms.Keys.V)
-                {
-                    if (bot != null)
-                        bot.BackTrace = !bot.BackTrace;
-                    e.Handled = true;
-                }
-            }
+            OnKey(e);            
         }
 
-        private Nav.D3.Navmesh m_Navmesh = null;
-        private Enigma.D3.Engine engine = null;
-        private int last_location = -1;
-        private bool auto_clear_navmesh = false;
-        private PointF render_center = new PointF(200, 350);
-        private float render_scale = 1.5f;//0.75f;
-        private bool render_id = false;
-        private bool render_axis = true;
-        private bool render_connections = false;
-        private bool render_original_path = false;
-        private bool render_backtrack_path = false;
-        private bool render_positions_history = false;
-        private bool render_ray_cast = false;
-        private bool render_explore_cells = false;
-        private bool render_regions = false;
-        private bool render_explore_dist = false;
-        private bool render_cells = true;
-        private bool render_legend = true;
-        private bool render_grids = false;
-        private bool render_path = true;
-        private bool center_on_bot = true;
-        private PointF last_drag_mouse_pos = PointF.Empty;
-        private TestBot bot = null;
-        private string last_waypoints_file;
-        private string last_data_file;
-        private int explore_cell_id_to_render_dists = -1;
-        private List<List<Vec3>> waypoints_paths = new List<List<Vec3>>();
-        private List<Vec3> last_path = new List<Vec3>();
-        private List<Vec3> last_back_track_path = new List<Vec3>();
-        private List<Vec3> last_positions_history = new List<Vec3>();
-        private List<Vec3> last_explore_path = new List<Vec3>();
+        protected Nav.Navmesh m_Navmesh = null;
+        protected Nav.NavigationEngine m_Navigator = null;
+        protected Nav.ExplorationEngine m_Explorer = null;
+        protected PointF m_RenderCenter = new PointF(200, 350);
+        protected float m_RenderScale = 1.5f;//0.75f;
+        private bool m_RenderIds = false;
+        protected bool m_RenderAxis = true;
+        private bool m_RenderConnections = false;
+        private bool m_RenderOriginalPath = false;
+        private bool m_RenderBacktrackPath = false;
+        private bool m_RenderPositionsHistory = false;
+        private bool m_RenderRayCast = false;
+        private bool m_RenderExploreCells = false;
+        private bool m_RenderRegions = false;
+        private bool m_RenderExploreDist = false;
+        private bool m_RenderCells = true;
+        private bool m_RenderLegend = true;
+        private bool m_RenderGrids = false;
+        private bool m_RenderPath = true;
+        private bool m_CenterOnBot = true;
+        private PointF m_LastDragMousePos = PointF.Empty;
+        private TestBot m_Bot = null;
+        private string m_LastWaypointsFile;
+        private string m_LastDataFile;
+        private int m_ExploreCellIdToRenderDists = -1;
+        private List<List<Vec3>> m_WaypointsPaths = new List<List<Vec3>>();
+        private List<Vec3> m_LastPath = new List<Vec3>();
+        private List<Vec3> m_LastBacktrackPath = new List<Vec3>();
+        private List<Vec3> m_LastPositionsHistory = new List<Vec3>();
+        private List<Vec3> m_LastExplorePath = new List<Vec3>();
+        private float m_LastMaxMoveCostMult = 1;
     }
 
     class RenderHelper
     {
-        private static float GetProportional(float value, float min, float max, float new_min, float new_max)
+        public static float GetProportional(float value, float min, float max, float new_min, float new_max)
         {
             if (min == max)
                 return new_max;
@@ -807,17 +774,15 @@ namespace NavMeshViewer
             }
         }
 
-        public static void Render(Nav.Navmesh navmesh, Nav.ExploreCell cell, PointF trans, PaintEventArgs e, bool draw_id)
+        public static void Render(Nav.Navmesh navmesh, Nav.ExploreCell cell, List<Nav.ExploreCell> all_cells, PointF trans, PaintEventArgs e, bool draw_id)
         {
-            List<Nav.ExploreCell> all_cells = navmesh.Explorator.dbg_GetExploreCells();
-
             foreach (ExploreCell other_cell in all_cells)
             {
                 if (cell.Id == other_cell.Id)
                     continue;
 
                 DrawLine(e.Graphics, Pens.Gray, trans, cell.Position, other_cell.Position);
-                DrawString(e.Graphics, Brushes.Black, trans, (cell.Position + other_cell.Position) * 0.5f, Math.Round(navmesh.Explorator.ExploreDistance(cell, other_cell)).ToString(), 8);
+                //DrawString(e.Graphics, Brushes.Black, trans, (cell.Position + other_cell.Position) * 0.5f, Math.Round(navmesh.Explorator.ExploreDistance(cell, other_cell)).ToString(), 8);
             }
         }
 

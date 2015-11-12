@@ -7,27 +7,35 @@ using Nav;
 
 namespace NavMeshViewer
 {
-    public class TestBot : NavigationObserver
+    public class TestBot : IDisposable, NavigationObserver
     {
-        public TestBot(Nav.D3.Navmesh navmesh, Vec3 pos, Vec3 dest, bool explore = false, bool simulate_stuck = false, int dest_grid_id = -1, List<Vec3> waypoints = null)
+        public TestBot(Nav.Navmesh navmesh, NavigationEngine navigator, ExplorationEngine explorer, Vec3 pos, Vec3 dest, bool explore = false, bool simulate_stuck = false, int dest_grid_id = -1, List<Vec3> waypoints = null)
         {
             m_Navmesh = navmesh;
-            m_Navmesh.Navigator.AddListener(this);
-            m_Navmesh.Navigator.CurrentPos = pos;
-
-            m_Navmesh.Navigator.Precision = 2;
-            m_Navmesh.Explorator.Enabled = explore;
-            m_Navmesh.Navigator.DestinationGridsId = dest_grid_id != -1 ? new List<int>(new int[]{dest_grid_id}) : null;
-
+            //m_Navigator = new NavigationEngine(navmesh);
+            //m_Navigator.AddObserver(this);
+            m_Navigator = navigator;
+            m_Navigator.CurrentPos = pos;
+            m_Navigator.Precision = 2;
+            m_Navigator.EnableAntiStuck = true;
+            m_Navigator.DestinationGridsId = dest_grid_id != -1 ? new List<int>(new int[] { dest_grid_id }) : null;
             if (waypoints != null)
-                m_Navmesh.Navigator.Waypoints = waypoints;  
+                m_Navigator.Waypoints = waypoints;  
+
+            //m_Explorer = new Nav.ExploreEngine.Nearest(m_Navmesh, m_Navigator);
+            m_Explorer = explorer;
+            m_Explorer.Enabled = explore;
 
             Destination = dest;
-            m_Navmesh.Navigator.EnableAntiStuck = true;
-            m_GotoPosUpdateTimer.Start();
-
-            Paused = false;
             SimulateStuck = simulate_stuck;
+            Paused = false;
+            m_GotoPosUpdateTimer.Start();
+        }
+
+        public void Dispose()
+        {
+            m_Navigator.Dispose();
+            m_Explorer.Dispose();
         }
 
         public static float SPEED = 60;//25; //approximated movement speed with 25% move speed bonus
@@ -41,38 +49,42 @@ namespace NavMeshViewer
         public void OnDestinationReachFailed(DestType type, Vec3 dest)
         {
         }
+
+        public void OnHugeCurrentPosChange()
+        {
+        }
         
         public void Update(float dt)
         {
             if (m_GotoPosUpdateTimer.ElapsedMilliseconds > GOTO_POS_UPDATE_INTERVAL)
             {
-                m_LastGotoPos = m_Navmesh.Navigator.GoToPosition;
+                m_LastGotoPos = m_Navigator.GoToPosition;
                 m_GotoPosUpdateTimer.Restart();
             }
 
             if (!m_Destination.IsEmpty)
-                m_Navmesh.Navigator.Destination = m_Destination;
+                m_Navigator.Destination = m_Destination;
 
-            if (m_Navmesh.Explorator.IsExplored() || m_LastGotoPos.IsEmpty)
+            if (m_Explorer.IsExplored() || m_LastGotoPos.IsEmpty)
                 return;
 
             Vec3 dir = Vec3.Empty;
             float dist = 0;
 
-            if (!Paused && !SimulateStuck && !m_LastGotoPos.Equals(m_Navmesh.Navigator.CurrentPos))
+            if (!Paused && !SimulateStuck && !m_LastGotoPos.Equals(m_Navigator.CurrentPos))
             {
-                dir = m_LastGotoPos - m_Navmesh.Navigator.CurrentPos;
+                dir = m_LastGotoPos - m_Navigator.CurrentPos;
                 dist = dir.Length();
                 dir.Normalize();
             }
 
-            m_Navmesh.Navigator.IsStandingOnPurpose = false;
-            m_Navmesh.Navigator.CurrentPos = m_Navmesh.Navigator.CurrentPos + dir * Math.Min(SPEED * dt, dist);
+            m_Navigator.IsStandingOnPurpose = false;
+            m_Navigator.CurrentPos = m_Navigator.CurrentPos + dir * Math.Min(SPEED * dt, dist);
         }
 
         public void Render(Graphics g, PointF trans)
         {
-            RenderHelper.DrawCircle(g, Pens.Blue, trans, m_Navmesh.Navigator.CurrentPos, 4);
+            RenderHelper.DrawCircle(g, Pens.Blue, trans, m_Navigator.CurrentPos, 4);
         }
 
         public bool Paused { get; set; }
@@ -81,21 +93,23 @@ namespace NavMeshViewer
         
         public bool BackTrace
         {
-            get { return m_Navmesh.Navigator.BackTrackEnabled; }
-            set { m_Navmesh.Navigator.BackTrackEnabled = value; }
+            get { return m_Navigator.BackTrackEnabled; }
+            set { m_Navigator.BackTrackEnabled = value; }
         }
 
         public Vec3 Position
         {
-            get { return m_Navmesh.Navigator.CurrentPos; }
+            get { return m_Navigator.CurrentPos; }
         }
 
         public Vec3 Destination
         {
-            set { m_Destination = value; m_Navmesh.Navigator.Destination = value; }
+            set { m_Destination = value; m_Navigator.Destination = value; }
         }
 
-        private Nav.D3.Navmesh m_Navmesh = null;
+        private Nav.Navmesh m_Navmesh = null;
+        private Nav.NavigationEngine m_Navigator = null;
+        private Nav.ExplorationEngine m_Explorer = null;
         private Vec3 m_LastGotoPos = Vec3.Empty;
         private Vec3 m_Destination = Vec3.Empty;
         private Stopwatch m_GotoPosUpdateTimer = new Stopwatch();
