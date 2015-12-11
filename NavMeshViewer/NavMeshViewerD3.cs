@@ -70,10 +70,15 @@ namespace NavMeshViewer
 
         protected override void ModifyRenderMatrix(ref Matrix m)
         {
-            // display navmesh in the same manner as Diablo does
-            m.Rotate(135);
-            Matrix flip_x_m = new Matrix(1, 0, 0, -1, 0, 0);
-            m.Multiply(flip_x_m);
+            if (m_Enigma != null)
+            {
+                // display navmesh in the same manner as Diablo does
+                m.Rotate(135);
+                Matrix flip_x_m = new Matrix(1, 0, 0, -1, 0, 0);
+                m.Multiply(flip_x_m);
+            }
+            else
+                base.ModifyRenderMatrix(ref m);
         }
 
         protected override void OnRenderData(PaintEventArgs e)
@@ -110,9 +115,9 @@ namespace NavMeshViewer
 
         protected override void OnRenderUI(PaintEventArgs e)
         {
-            if (m_Enigma == null)
-                e.Graphics.DrawString("Run viewer when Diablo 3 is running!", new Font("Arial", 16), Brushes.Black, Width / 2 - 190, Height / 2 - 50);
-            else
+            //if (m_Enigma == null)
+            //    e.Graphics.DrawString("Run viewer when Diablo 3 is running!", new Font("Arial", 16), Brushes.Black, Width / 2 - 190, Height / 2 - 50);
+            //else
                 base.OnRenderUI(e);
         }
 

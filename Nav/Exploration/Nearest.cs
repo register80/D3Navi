@@ -6,7 +6,7 @@ using System.Diagnostics;
 
 namespace Nav.ExploreEngine
 {
-    // This algorithm chooses nearest unexplored neighbour but prefer those with many visited neighbours to not leave unexplored islands
+    // This algorithm chooses nearest unexplored neighbor but prefer those with many visited neighbors to not leave unexplored islands
     public class Nearest : ExplorationEngine
     {
         public Nearest(Navmesh navmesh, NavigationEngine navigator)
@@ -14,7 +14,7 @@ namespace Nav.ExploreEngine
         {
         }
 
-        private class ExploreCellSelector : Algorihms.IDistanceVisitor<ExploreCell>
+        protected class ExploreCellSelector : Algorihms.IDistanceVisitor<ExploreCell>
         {
             public ExploreCellSelector()
             {
@@ -22,22 +22,27 @@ namespace Nav.ExploreEngine
 
             public void Visit(ExploreCell cell, float distance)
             {
-                // decrease distance based on number of explored neighbours (do not leave small unexplored fragments)
-                float dist = distance;
-                
-                dist -= DISTANCE_REDUCTION_EXPLORE_PCT * GetExploredNeighboursPct(cell, 1);
-                //dist -= DISTANCE_REDUCTION_PER_EXPLORED_NEIGHBOUR * (float)explored_neighbours_count;
-                //dist -= DISTANCE_REDUCTION_PER_MISSING_NEIGHBOUR * Math.Max(0, AVG_NEIGHBOURS_COUNT - cell.Neighbours.Count);
-                //dist -= base_dist * DISTANCE_PCT_REDUCTION_PER_EXPLORED_NEIGHBOUR * (float)explored_neighbours_count;
-                //dist -= base_dist * DISTANCE_PCT_REDUCTION_PER_MISSING_NEIGHBOUR * (float)missing_neighbours_count;
-
-                //cell.UserData = (Int64)(GetExploredNeighboursPct(cell, 1) * 100);
+                float dist = EvaluateDist(cell, distance);
 
                 if (dist < dest_cell_distance)
                 {
                     dest_cell = cell;
                     dest_cell_distance = dist;
                 }
+            }
+
+            protected virtual float EvaluateDist(ExploreCell cell, float distance)
+            {
+                // decrease distance based on number of explored neighbors (do not leave small unexplored fragments)
+                float dist = distance;
+
+                dist -= DISTANCE_REDUCTION_EXPLORE_PCT * GetExploredNeighboursPct(cell, 1);
+                //dist -= DISTANCE_REDUCTION_PER_EXPLORED_NEIGHBOUR * (float)explored_neighbours_count;
+                //dist -= DISTANCE_REDUCTION_PER_MISSING_NEIGHBOUR * Math.Max(0, AVG_NEIGHBOURS_COUNT - cell.Neighbours.Count);
+                //dist -= base_dist * DISTANCE_PCT_REDUCTION_PER_EXPLORED_NEIGHBOUR * (float)explored_neighbours_count;
+                //dist -= base_dist * DISTANCE_PCT_REDUCTION_PER_MISSING_NEIGHBOUR * (float)missing_neighbours_count;
+
+                return dist;
             }
 
             private float GetExploredNeighboursPct(ExploreCell cell, int max_depth)
@@ -81,7 +86,7 @@ namespace Nav.ExploreEngine
 
             HashSet<ExploreCell> unexplored_cells = GetUnexploredCells(current_explore_cell);
 
-            ExploreCellSelector selector = new ExploreCellSelector();
+            ExploreCellSelector selector = CreateExploreCellSelector();
 
             Algorihms.VisitBreadth(current_explore_cell, MovementFlag.None, -1, unexplored_cells, selector);
 
@@ -89,6 +94,11 @@ namespace Nav.ExploreEngine
                 return selector.dest_cell.Position;
 
             return Vec3.Empty;
+        }
+
+        protected virtual ExploreCellSelector CreateExploreCellSelector()
+        {
+            return new ExploreCellSelector();
         }
     }
 }

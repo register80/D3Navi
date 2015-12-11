@@ -49,7 +49,7 @@ namespace Nav
 
         public float Radius
         {
-            get { return Math.Min(max.X - min.X, max.Y - min.Y); }
+            get { return Math.Min(max.X - min.X, max.Y - min.Y) * 0.5f; }
         }
 
         public Vec3 Dimensions

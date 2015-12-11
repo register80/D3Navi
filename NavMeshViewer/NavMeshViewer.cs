@@ -86,7 +86,7 @@ namespace NavMeshViewer
 
                 if (m_RenderGrids || m_RenderCells)
                 {
-                    using (m_Navmesh.AquireReadDataLock())
+                    using (m_Navmesh.AcquireReadDataLock())
                     {
                         List<GridCell> grid_cells = m_Navmesh.dbg_GetGridCells();
 
@@ -127,7 +127,7 @@ namespace NavMeshViewer
                         if (m_RenderExploreCells)
                         {
                             foreach (Nav.ExploreCell explore_cell in explore_cells)
-                                RenderHelper.Render(explore_cell, m_Navigator.ExploreDestPrecision, m_RenderCenter, e, m_RenderConnections, m_RenderIds);
+                                RenderHelper.Render(explore_cell, m_Explorer.ExploreDestPrecision, m_RenderCenter, e, m_RenderConnections, m_RenderIds);
                         }
 
                         if (m_RenderExploreDist)

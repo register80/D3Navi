@@ -284,6 +284,6 @@ namespace Nav
             IsEmpty = r.ReadBoolean();
         }
 
-        public override string ToString() { return "[" + Math.Round(X) + " " + Math.Round(Y) + " " + Math.Round(Z) + "]"; }
+        public override string ToString() { return "[" + Math.Round(X, 1) + " " + Math.Round(Y, 1) + " " + Math.Round(Z, 1) + "]"; }
     }
 }

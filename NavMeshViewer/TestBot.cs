@@ -7,7 +7,7 @@ using Nav;
 
 namespace NavMeshViewer
 {
-    public class TestBot : IDisposable, NavigationObserver
+    public class TestBot : IDisposable, INavigationObserver
     {
         public TestBot(Nav.Navmesh navmesh, NavigationEngine navigator, ExplorationEngine explorer, Vec3 pos, Vec3 dest, bool explore = false, bool simulate_stuck = false, int dest_grid_id = -1, List<Vec3> waypoints = null)
         {

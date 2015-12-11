@@ -24,6 +24,7 @@ namespace Nav
         private void InitExploreCell()
         {
             Explored = false;
+            Delayed = false;
             Small = false;
             GlobalId = LastExploreCellGlobalId++;
         }
@@ -55,6 +56,7 @@ namespace Nav
             base.Serialize(w);
 
             w.Write(Explored);
+            w.Write(Delayed);
             w.Write(Small);
             Position.Serialize(w);
 
@@ -68,6 +70,7 @@ namespace Nav
             base.Deserialize(explore_cells, r);
 
             Explored = r.ReadBoolean();
+            Delayed = r.ReadBoolean();
             Small = r.ReadBoolean();
             Position = new Vec3(r);
 
@@ -97,8 +100,15 @@ namespace Nav
         }
 
         public List<Cell> Cells { get; private set; }
+        //public List<int> GridCellsId { get; private set; }
         public Vec3 Position { get; private set; }
+
         public bool Explored { get; set; }
+
+        // Exploration of this cell has been delayed until all non-small unexplored cells has been visited
+        public bool Delayed { get; set; }
+
+        // Small explore cells will be visited as last
         public bool Small { get; set; }
 
         internal static int LastExploreCellGlobalId = 0;

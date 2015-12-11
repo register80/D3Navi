@@ -2,7 +2,7 @@
 
 namespace Nav
 {
-    public interface NavmeshObserver
+    public interface INavmeshObserver
     {
         void OnGridCellAdded(GridCell grid_cell);
         void OnNavDataChanged();

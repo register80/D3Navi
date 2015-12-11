@@ -16,7 +16,7 @@ namespace Nav.D3
             max = new Vec3(scene.x174_MeshMaxX, scene.x178_MeshMaxY, scene.x104_MeshMinZ); //there is no max z, so consider all grid cells flat
         }
 
-        public class uid// : IEquatable<uid>
+        public class uid : IEquatable<uid>
         {
             public uid(Vec3 min, int sno_id) { this.min = min; this.sno_id = sno_id; }
             public uid(BinaryReader r) { Deserialize(r); }
@@ -24,13 +24,13 @@ namespace Nav.D3
             public Vec3 min;
             public int sno_id;
 
-            //public bool Equals(uid s)
-            //{
-            //    if (s == null)
-            //        return false;
+            public bool Equals(uid s)
+            {
+                if (s == null)
+                    return false;
 
-            //    return min.Equals(s.min) && sno_id.Equals(s.sno_id);
-            //}
+                return min.Equals(s.min) && sno_id.Equals(s.sno_id);
+            }
 
             public override bool Equals(Object obj)
             {
@@ -39,8 +39,7 @@ namespace Nav.D3
 
                 uid u = obj as uid;
 
-                return min.Equals(u.min) && sno_id.Equals(u.sno_id);
-                //return Equals(u);
+                return Equals(u);
             }
 
             public override int GetHashCode()

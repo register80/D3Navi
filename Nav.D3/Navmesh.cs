@@ -23,34 +23,19 @@ namespace Nav.D3
             m_Engine = engine;
 
             if (engine != null)
-            {
-                using (new Profiler("[Nav.D3] Loading SNO data cache took {t}."))
-                    LoadSnoCache();
-
-                m_FetchNavDataTimer.AutoReset = false;
-                m_FetchNavDataTimer.Interval = 300;
-                m_FetchNavDataTimer.Elapsed += new ElapsedEventHandler(FetchData);
-                m_FetchNavDataTimer.Start();
-
-                DangerRegionsEnabled = false;
-
-                m_FetchDangerRegionsTimer.AutoReset = false;
-                m_FetchDangerRegionsTimer.Interval = 100;
-                m_FetchDangerRegionsTimer.Elapsed += new ElapsedEventHandler(FetchDangerRegions);
-                m_FetchDangerRegionsTimer.Start();
-
                 Log("[Nav.D3] Navmesh created!");
-            }
             else
-            {
                 Log("[Nav.D3] Navmesh not properly created, engine is null!");
-            }
         }
 
-        public override void Dispose()
+        protected override void Init()
         {
-            base.Dispose();
-            Stop();
+            base.Init();
+
+            using (new Profiler("[Nav.D3] Loading SNO data cache took {t}."))
+                LoadSnoCache();
+
+            DangerRegionsEnabled = false;
         }
 
         public override void Clear()
@@ -134,25 +119,9 @@ namespace Nav.D3
 
         public bool DangerRegionsEnabled { get; set; }
 
-        public double FetchNavDataInterval
-        {
-            set { m_FetchNavDataTimer.Interval = value; }
-        }
-
         public bool IsUpdating
         {
-            get
-            {
-                try
-                {
-                    return IsLocalActorValid() && IsObjectManagerOnNewFrame();
-                }
-                catch (Exception)
-                {
-                }
-
-                return false;
-            }
+            get { return IsLocalActorValid() && IsObjectManagerOnNewFrame(); }
         }
 
         public List<int> AllowedAreasSnoId
@@ -174,44 +143,42 @@ namespace Nav.D3
 
         public static Navmesh Current { get; private set; }
 
-        public void Start()
+        protected override void OnUpdate(Int64 time)
         {
-            if (!m_FetchNavDataTimer.Enabled)
-                m_FetchNavDataTimer.Start();
-            if (!m_FetchDangerRegionsTimer.Enabled)
-                m_FetchDangerRegionsTimer.Start();
-        }
+            base.OnUpdate(time);
 
-        public void Stop()
-        {
-            // wait for in progress fetch to finish
-            lock (m_FetchNavDataLock)
-                m_FetchNavDataTimer.Stop();
-            lock (m_FetchDangerRegionsLock)
-                m_FetchDangerRegionsTimer.Stop();
-        }
-
-        private void FetchData(object source = null, ElapsedEventArgs e = null)
-        {
-            lock (m_FetchNavDataLock)
+            if (time - m_LastFetchNavDataTime > 300)
             {
-                if (IsUpdating)
+                FetchNavData();
+                m_LastFetchNavDataTime = time;
+            }
+
+            if (time - m_LastFetchDangerRegionsTime > 100)
+            {
+                FetchDangerRegions();
+                m_LastFetchDangerRegionsTime = time;
+            }
+        }
+
+        private Int64 m_LastFetchNavDataTime = 0;
+        private Int64 m_LastFetchDangerRegionsTime = 0;
+
+        private void FetchNavData()
+        {
+            if (IsUpdating)
+            {
+                try
                 {
-                    try
+                    FetchSceneSnoData();
+                    using (new WriteLock(ProcessedScenesLock))
                     {
-                        FetchSceneSnoData();
-                        using (new WriteLock(ProcessedScenesLock))
-                        {
-                            FetchSceneData();
-                        }
-                    }
-                    catch (Exception)
-                    {
+                        FetchSceneData();
                     }
                 }
-
-                m_FetchNavDataTimer.Start();
-            }            
+                catch (Exception)
+                {
+                }
+            }
         }
 
         private void FetchSceneSnoData()
@@ -352,92 +319,103 @@ namespace Nav.D3
 
         private void FetchDangerRegions(object source = null, ElapsedEventArgs e = null)
         {
-            lock (m_FetchDangerRegionsLock)
+            if (DangerRegionsEnabled && IsUpdating)
             {
-                if (IsUpdating && DangerRegionsEnabled)
+                try
                 {
-                    try
+                    IEnumerable<ActorCommonData> objects = ActorCommonDataHelper.Enumerate(x => (x.x184_ActorType == ActorType.ServerProp || x.x184_ActorType == ActorType.Monster || x.x184_ActorType == ActorType.Projectile || x.x184_ActorType == ActorType.CustomBrain) && DANGERS.Exists(d => x.x004_Name.Contains(d.name)));
+
+                    HashSet<region_data> dangers = new HashSet<region_data>();
+
+                    foreach (ActorCommonData obj in objects)
                     {
-                        IEnumerable<ActorCommonData> objects = ActorCommonDataHelper.Enumerate(x => (x.x184_ActorType == ActorType.ServerProp || x.x184_ActorType == ActorType.Monster || x.x184_ActorType == ActorType.Projectile || x.x184_ActorType == ActorType.CustomBrain) && DANGERS.Exists(d => x.x004_Name.Contains(d.name)));
-
-                        HashSet<region_data> dangers = new HashSet<region_data>();
-
-                        foreach (ActorCommonData obj in objects)
+                        danger_data data = DANGERS.Find(d => obj.x004_Name.Contains(d.name));
+                        if (data != null)
                         {
-                            danger_data data = DANGERS.Find(d => obj.x004_Name.Contains(d.name));
-                            if (data != null)
-                            {
-                                Vec3 pos = new Vec3(obj.x0D0_WorldPosX, obj.x0D4_WorldPosY, obj.x0D8_WorldPosZ);
-                                AABB area = new AABB(pos - new Vec3(data.range, data.range, pos.Z - 100), pos + new Vec3(data.range, data.range, pos.Z + 100));
-                                dangers.Add(new region_data(area, data.move_cost_mult));
-                            }
+                            Vec3 pos = new Vec3(obj.x0D0_WorldPosX, obj.x0D4_WorldPosY, obj.x0D8_WorldPosZ);
+                            AABB area = new AABB(pos - new Vec3(data.range, data.range, pos.Z - 100), pos + new Vec3(data.range, data.range, pos.Z + 100));
+                            dangers.Add(new region_data(area, data.move_cost_mult));
                         }
+                    }
 
-                        Regions = dangers;
-                    }
-                    catch (Exception)
-                    {
-                    }
+                    Regions = dangers;
                 }
-
-                m_FetchDangerRegionsTimer.Start();
+                catch (Exception)
+                {
+                }
             }
         }
 
         private bool IsLocalActorValid()
         {
-            if (m_Engine == null)
-                return false;
-
-            m_LocalData = m_LocalData ?? m_Engine.LocalData;
-
-            byte is_not_in_game = (byte)m_LocalData.x04_IsNotInGame;
-            if (is_not_in_game == 0xCD) // structure is being updated, everything is cleared with 0xCD ('-')
+            try
             {
-                if (!m_IsLocalActorReady)
+                if (m_Engine == null)
                     return false;
-            }
-            else
-            {
-                if (is_not_in_game == 0)
+
+                m_LocalData = m_LocalData ?? m_Engine.LocalData;
+
+                byte is_not_in_game = (byte)m_LocalData.x04_IsNotInGame;
+                if (is_not_in_game == 0xCD) // structure is being updated, everything is cleared with 0xCD ('-')
                 {
                     if (!m_IsLocalActorReady)
-                        m_IsLocalActorReady = true;
+                        return false;
                 }
                 else
                 {
-                    if (m_IsLocalActorReady)
-                        m_IsLocalActorReady = false;
+                    if (is_not_in_game == 0)
+                    {
+                        if (!m_IsLocalActorReady)
+                            m_IsLocalActorReady = true;
+                    }
+                    else
+                    {
+                        if (m_IsLocalActorReady)
+                            m_IsLocalActorReady = false;
 
-                    return false;
+                        return false;
+                    }
                 }
+
+                return m_LocalData.x00_IsActorCreated == 1;
+            }
+            catch (Exception)
+            {
             }
 
-            return m_LocalData.x00_IsActorCreated == 1;
+            return false;
         }
 
         private bool IsObjectManagerOnNewFrame()
         {
-            if (m_Engine == null)
-                return false;
-
-            m_ObjectManager = m_ObjectManager ?? m_Engine.ObjectManager;
-
-            // Don't do anything unless game updated frame.
-            int currentFrame = m_ObjectManager.x038_Counter_CurrentFrame;
-
-            if (currentFrame == m_LastFrame)
-                return false;
-
-            if (currentFrame < m_LastFrame)
+            try
             {
-                // Lesser frame than before = left game probably.
+                if (m_Engine == null)
+                    return false;
+
+                m_ObjectManager = m_ObjectManager ?? m_Engine.ObjectManager;
+
+                // Don't do anything unless game updated frame.
+                int currentFrame = m_ObjectManager.x038_Counter_CurrentFrame;
+
+                if (currentFrame == m_LastFrame)
+                    return false;
+
+                if (currentFrame < m_LastFrame)
+                {
+                    // Lesser frame than before = left game probably.
+                    m_LastFrame = currentFrame;
+                    return false;
+                }
+
                 m_LastFrame = currentFrame;
-                return false;
+                return true;
+            }
+            catch (Exception)
+            {
             }
 
-            m_LastFrame = currentFrame;
-            return true;
+            return false;
         }
 
         private void LoadSnoCache()
@@ -463,8 +441,6 @@ namespace Nav.D3
         private static string SCENE_SNO_CACHE_DIR = "sno_cache/";
         private static bool USE_SNO_CACHE = true;
 
-        private Object m_FetchNavDataLock = new Object();
-        private Object m_FetchDangerRegionsLock = new Object();
         private ReaderWriterLockSlim ProcessedScenesLock = new ReaderWriterLockSlim();
         private ReaderWriterLockSlim D3InputLock = new ReaderWriterLockSlim();
 
@@ -472,8 +448,6 @@ namespace Nav.D3
         private HashSet<SceneData.uid> m_ProcessedSceneId = new HashSet<SceneData.uid>(); // @ProcessedScenesLock
         private List<int> m_AllowedAreasSnoId = new List<int>(); //@D3InputLock
         private List<int> m_AllowedGridCellsId = new List<int>(); //@D3InputLock
-        private System.Timers.Timer m_FetchNavDataTimer = new System.Timers.Timer();
-        private System.Timers.Timer m_FetchDangerRegionsTimer = new System.Timers.Timer();
         private Engine m_Engine;
         private int m_LastFrame;
         private LocalData m_LocalData;

@@ -18,7 +18,7 @@ namespace Nav
         public Cell cell;
     }
 
-    class Algorihms
+    public class Algorihms
     {
         private static double AcceptanceProbability(float energy, float new_energy, double temperature)
         {

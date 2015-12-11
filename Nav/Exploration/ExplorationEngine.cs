@@ -7,12 +7,13 @@ using System.Linq;
 
 namespace Nav
 {
-    public abstract class ExplorationEngine : IDisposable, NavigationObserver, NavmeshObserver
+    public abstract class ExplorationEngine : IDisposable, INavigationObserver, INavmeshObserver
     {
         public ExplorationEngine(Navmesh navmesh, NavigationEngine navigator)
         {
             EXPLORE_CELL_SIZE = 90;
-            MAX_AREA_TO_MARK_AS_SMALL = 400;
+            MAX_AREA_TO_MARK_AS_SMALL = 600;
+            ExploreDestPrecision = 20;
 
             m_Navmesh = navmesh;
             m_Navmesh.AddObserver(this);
@@ -30,6 +31,9 @@ namespace Nav
 
         public int EXPLORE_CELL_SIZE { get; protected set; }
         public float MAX_AREA_TO_MARK_AS_SMALL { get; protected set; }
+
+        // precision with explore destination will be accepted as reached
+        public float ExploreDestPrecision { get; set; }
 
         public virtual void Clear()
         {
@@ -51,7 +55,7 @@ namespace Nav
             Clear();
 
             // generate exploration data from already existing grid cells
-            using (m_Navmesh.AquireReadDataLock())
+            using (m_Navmesh.AcquireReadDataLock())
             {
                 foreach (GridCell g_cell in m_Navmesh.m_GridCells)
                     OnGridCellAdded(g_cell);
@@ -65,7 +69,8 @@ namespace Nav
 
         public virtual void Dispose()
         {
-            UpdatesThread.Abort();
+            m_ShouldStopUpdates = true;
+            UpdatesThread.Join();
 
             m_Navmesh.RemoveObserver(this);
             m_Navigator.RemoveObserver(this);
@@ -85,7 +90,7 @@ namespace Nav
         {
             using (new ReadLock(DataLock))
             using (new ReadLock(InputLock))
-            using (m_Navmesh.AquireReadDataLock())
+            using (m_Navmesh.AcquireReadDataLock())
             {
                 w.Write(m_Enabled);
 
@@ -108,7 +113,7 @@ namespace Nav
         {
             using (FileStream fs = File.OpenRead(name + ".explorer"))
             using (BinaryReader r = new BinaryReader(fs))
-            using (m_Navmesh.AquireReadDataLock())
+            using (m_Navmesh.AcquireReadDataLock())
             {                
                 OnDeserialize(m_Navmesh.m_AllCells, r);
             }
@@ -241,7 +246,7 @@ namespace Nav
                 OnCellExplored(dest_cell);
 
             Vec3 next_dest = GetDestinationCellPosition();
-            m_Navigator.SetDestination(next_dest, DestType.Explore);
+            m_Navigator.SetDestination(next_dest, DestType.Explore, ExploreDestPrecision);
         }
 
         public void OnDestinationReachFailed(DestType type, Vec3 dest)
@@ -382,13 +387,20 @@ namespace Nav
                 m_CellsToExploreCount = selector.all_cells_count;
                 m_ExploredCellsCount = m_CellsToExploreCount - selector.unexplored_cells.Count;
 
-                HashSet<ExploreCell> big_unexplored_cells = new HashSet<ExploreCell>(selector.unexplored_cells.Where(x => !x.Small));
+                // first try all big cells unvisited by anyone (undelayed)
+                HashSet<ExploreCell> unexplored_cells_subset = new HashSet<ExploreCell>(selector.unexplored_cells.Where(x => !x.Small && !x.Delayed));
 
-                // explore small cells only when all other cells were explored
-                if (big_unexplored_cells.Count == 0)
-                    return selector.unexplored_cells;
-                else
-                    return big_unexplored_cells;
+                if (unexplored_cells_subset.Count > 0)
+                    return unexplored_cells_subset;
+
+                // try all big cells unvisited by me 
+                unexplored_cells_subset = new HashSet<ExploreCell>(selector.unexplored_cells.Where(x => !x.Small));
+
+                if (unexplored_cells_subset.Count > 0)
+                    return unexplored_cells_subset;
+
+                // try all remaining cells
+                return selector.unexplored_cells;
             }
         }
 
@@ -399,7 +411,7 @@ namespace Nav
             Stopwatch timer = new Stopwatch();
             timer.Start();
 
-            while (true)
+            while (!m_ShouldStopUpdates)
             {
                 long time = timer.ElapsedMilliseconds;
 
@@ -415,6 +427,9 @@ namespace Nav
                     Thread.Sleep(50);
             }
         }
+
+        // Controls updated thread execution
+        private volatile bool m_ShouldStopUpdates = false;
 
         private void UpdateExploration()
         {
@@ -432,7 +447,7 @@ namespace Nav
             if (IsExplored())
             {
                 m_Navmesh.Log("[Nav] Exploration finished!");
-                m_Navigator.SetDestination(Vec3.Empty, DestType.None);
+                m_Navigator.ClearDestination(DestType.Explore);
                 return;
             }
 
@@ -441,18 +456,25 @@ namespace Nav
                 if (m_Navigator.GetDestinationType() < DestType.Explore)
                 {
                     Vec3 dest = GetDestinationCellPosition();
-                    m_Navigator.SetDestination(dest, DestType.Explore);
+                    m_Navigator.SetDestination(dest, DestType.Explore, ExploreDestPrecision);
                     m_Navmesh.Log("[Nav] Explore dest changed.");
                 }
                 
                 {
                     // mark cells as explored when passing by close enough
-                    ExploreCell current_explore_cell = m_ExploreCells.Find(x => !x.Explored && x.Position.Distance2D(current_pos) < m_Navigator.ExploreDestPrecision);
+                    ExploreCell current_explore_cell = m_ExploreCells.Find(x => !x.Explored && x.Position.Distance2D(current_pos) < ExploreDestPrecision);
 
                     if (current_explore_cell != null)
                         OnCellExplored(current_explore_cell);
                 }
+
+                OnUpdateExploration();
             }
+        }
+
+        // DataLock is already aquired in read-upgradeable state
+        protected virtual void OnUpdateExploration()
+        {
         }
 
         private void Add(ExploreCell explore_cell)

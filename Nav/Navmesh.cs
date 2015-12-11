@@ -58,16 +58,21 @@ namespace Nav
         {
             Log("[Nav] Creating navmesh...");
 
-            RegionsMoveCostMode = RegionsMode.Mult;
-            RegionsEnabled = true;
+            Verbose = verbose;
+
+            Init();
 
             UpdatesThread = new Thread(Updates);
             UpdatesThread.Name = "Navmesh-UpdatesThread";
             UpdatesThread.Start();
 
-            Verbose = verbose;
-
             Log("[Nav] Navmesh created");
+        }
+
+        protected virtual void Init()
+        {
+            RegionsMoveCostMode = RegionsMode.Mult;
+            RegionsEnabled = true;
         }
 
         // when true will print additional data to output
@@ -332,24 +337,36 @@ namespace Nav
 
         private Dictionary<int, overlapped_cell_data> m_CellsOverlappedByRegions = new Dictionary<int, overlapped_cell_data>(); // @ DataLock
 
-        //internal List<Cell> GetReplacedCells()
-        //{
-        //    return m_CellsOverlappedByRegions.Select(x => x.Value.replaced_cell).ToList();
-        //}
-
         private void Updates()
         {
-            while (true)
+            Stopwatch timer = new Stopwatch();
+            timer.Start();
+
+            while (!m_ShouldStopUpdates)
             {
-                UpdateRegions();
-                Thread.Sleep(250);
+                OnUpdate(timer.ElapsedMilliseconds);
+                Thread.Sleep(50);
             }
         }
 
+        // Controls updated thread execution
+        private volatile bool m_ShouldStopUpdates = false;
+
+        protected virtual void OnUpdate(Int64 time)
+        {
+            if (time - m_LastUpdateRegionsTime > 250)
+            {
+                UpdateRegions();
+                m_LastUpdateRegionsTime = time;
+            }
+        }
+
+        private Int64 m_LastUpdateRegionsTime = 0;
+
         private void UpdateRegions()
         {
-            // keep reference to current regions just in case someone sets new regions meanwhile
-            HashSet<region_data> regions_copy = m_Regions;
+            // copy current regions to avoid acquiring lock later
+            HashSet<region_data> regions_copy = Regions;
 
             using (new WriteLock(DataLock))
             {
@@ -528,7 +545,7 @@ namespace Nav
                 m_LastGridCellId = 0;
                 m_LastCellId = 0;
 
-                foreach (NavmeshObserver observer in m_Observers)
+                foreach (INavmeshObserver observer in m_Observers)
                     observer.OnNavDataCleared();
             }
 
@@ -1008,7 +1025,8 @@ namespace Nav
 
         public virtual void Dispose()
         {
-            UpdatesThread.Abort();
+            m_ShouldStopUpdates = true;
+            UpdatesThread.Join();
         }
 
         protected internal void Log(string msg)
@@ -1052,7 +1070,7 @@ namespace Nav
             return cells.FindAll(x => x.AABB.Inside(circle_center, radius));
         }
 
-        public void AddObserver(NavmeshObserver observer)
+        public void AddObserver(INavmeshObserver observer)
         {
             using (new WriteLock(InputLock))
             {
@@ -1063,7 +1081,7 @@ namespace Nav
             }
         }
 
-        public void RemoveObserver(NavmeshObserver observer)
+        public void RemoveObserver(INavmeshObserver observer)
         {
             using (new WriteLock(InputLock))
                 m_Observers.Remove(observer);
@@ -1071,23 +1089,23 @@ namespace Nav
 
         protected void NotifyOnNavDataChanged()
         {
-            List<NavmeshObserver> observers_copy = null;
+            List<INavmeshObserver> observers_copy = null;
 
             using (new ReadLock(InputLock))
                 observers_copy = m_Observers.ToList();
 
-            foreach (NavmeshObserver observer in observers_copy)
+            foreach (INavmeshObserver observer in observers_copy)
                 observer.OnNavDataChanged();
         }
 
         protected void NotifyOnGridCellAdded(GridCell g_cell)
         {
-            List<NavmeshObserver> observers_copy = null;
+            List<INavmeshObserver> observers_copy = null;
 
             using (new ReadLock(InputLock))
                 observers_copy = m_Observers.ToList();
 
-            foreach (NavmeshObserver observer in observers_copy)
+            foreach (INavmeshObserver observer in observers_copy)
                 observer.OnGridCellAdded(g_cell);
         }
 
@@ -1100,12 +1118,12 @@ namespace Nav
         private ReaderWriterLockSlim DataLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
         private ReaderWriterLockSlim InputLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
 
-        public ReadLock AquireReadDataLock() { return new ReadLock(DataLock); }
+        public ReadLock AcquireReadDataLock() { return new ReadLock(DataLock); }
         
         internal List<Cell> m_AllCells = new List<Cell>(); //@ DataLock
         private HashSet<CellsPatch> m_CellsPatches = new HashSet<CellsPatch>(); //@ DataLock
         internal List<GridCell> m_GridCells = new List<GridCell>(); //@ DataLock
         private HashSet<region_data> m_Regions = new HashSet<region_data>(); //@ InputLock
-        private List<NavmeshObserver> m_Observers = new List<NavmeshObserver>(); //@ InputLock
+        private List<INavmeshObserver> m_Observers = new List<INavmeshObserver>(); //@ InputLock
     }
 }

@@ -2,7 +2,7 @@
 
 namespace Nav
 {
-    public interface NavigationObserver
+    public interface INavigationObserver
     {
         void OnHugeCurrentPosChange();
         void OnDestinationReached(DestType type, Vec3 dest);

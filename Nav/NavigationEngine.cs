@@ -21,7 +21,7 @@ namespace Nav
         All = 0xFFFF,
     }
 
-    public class NavigationEngine : IDisposable, NavmeshObserver
+    public class NavigationEngine : IDisposable, INavmeshObserver
     {
         public NavigationEngine(Navmesh navmesh)
         {
@@ -32,19 +32,18 @@ namespace Nav
             UpdatesThread.Name = "Navigator-UpdatesThread";
             UpdatesThread.Start();
 
-            Precision = 8;
+            DefaultPrecision = 10;
             GridDestPrecision = 40;
-            ExploreDestPrecision = 20;
             PathRandomCoeff = 0;
-            PathNodesShiftDist = 5;
-            CurrentPosDiffRecalcThreshold = 20;
+            PathNodesShiftDist = 10;
+            CurrentPosDiffRecalcThreshold = 15;
             UpdatePathInterval = -1;
             EnableAntiStuck = false;
             IsStandingOnPurpose = true;
             MovementFlags = MovementFlag.Walk;
         }
 
-        public void AddObserver(NavigationObserver observer)
+        public void AddObserver(INavigationObserver observer)
         {
             using (new WriteLock(InputLock))
             {
@@ -55,7 +54,7 @@ namespace Nav
             }
         }
 
-        public void RemoveObserver(NavigationObserver observer)
+        public void RemoveObserver(INavigationObserver observer)
         {
             using (new WriteLock(InputLock))
                 m_Observers.Remove(observer);
@@ -65,13 +64,12 @@ namespace Nav
         public MovementFlag MovementFlags { get; set; }
 
         // precision with each path node will be accepted as reached
+        public float DefaultPrecision { get; set; }
+
         public float Precision { get; set; }
 
         // precision with grid destination will be accepted as reached
         public float GridDestPrecision { get; set; }
-
-        // precision with explore destination will be accepted as reached
-        public float ExploreDestPrecision { get; set; }
 
         // how much path will be randomized 0 by default
         public float PathRandomCoeff { get; set; }
@@ -117,7 +115,7 @@ namespace Nav
 
         public bool FindPath(Vec3 from, Vec3 to, MovementFlag flags, ref List<Vec3> path, float merge_distance = -1, bool as_close_as_possible = false, bool include_from = false, float random_coeff = 0, bool bounce = false, float shift_nodes_distance = 0, bool straighten = true)
         {
-            using (m_Navmesh.AquireReadDataLock())
+            using (m_Navmesh.AcquireReadDataLock())
             {
                 List<path_pos> tmp_path = new List<path_pos>();
 
@@ -221,8 +219,13 @@ namespace Nav
 
             set
             {
-                SetDestination(value, DestType.User);
+                SetDestination(value, DestType.User, DefaultPrecision);
             }
+        }
+
+        public void SetDestination(Vec3 pos, float precision)
+        {
+            SetDestination(pos, DestType.User, precision > 0 ? precision : DefaultPrecision);
         }
 
         public void ClearAllDestinations()
@@ -237,7 +240,7 @@ namespace Nav
 
         public void SetCustomDestination(Vec3 pos)
         {
-            SetDestination(pos, DestType.Custom);
+            SetDestination(pos, DestType.Custom, DefaultPrecision);
         }
 
         public void ClearCustomDestination()
@@ -442,7 +445,8 @@ namespace Nav
 
         public void Dispose()
         {
-            UpdatesThread.Abort();
+            m_ShouldStopUpdates = true;
+            UpdatesThread.Join();
 
             m_Navmesh.RemoveObserver(this);
         }
@@ -482,12 +486,13 @@ namespace Nav
                 m_PathDestination = Vec3.Empty;
                 m_PathDestType = DestType.None;
             }
-            ResetAntiStuckPrecition();
-            ResetAntiStuckPathing();            
+
+            ResetAntiStuckPrecition(Vec3.Empty);
+            ResetAntiStuckPathing(Vec3.Empty);            
         }
 
         // May enter InputLock (read -> write)
-        internal void SetDestination(Vec3 pos, DestType type)
+        internal void SetDestination(Vec3 pos, DestType type, float precision)
         {
             if (pos.IsEmpty)
             {
@@ -504,11 +509,12 @@ namespace Nav
                 {
                     m_Destination = pos;
                     m_DestinationType = type;
+                    Precision = precision;
                 }
 
-                m_Navmesh.Log("[Nav] Dest changed to " + pos + " [" + type + "]");
+                m_Navmesh.Log("[Nav] Dest changed to " + pos + " [" + type + "] precision " + precision);
 
-                ResetDestReachFailed();
+                ResetDestReachFailed(m_CurrentPos);
             }
 
             RequestPathUpdate();
@@ -542,31 +548,38 @@ namespace Nav
 
         private void Updates()
         {
-            long last_path_update_time = 0;
-
             Stopwatch timer = new Stopwatch();
             timer.Start();
 
-            while (true)
+            while (!m_ShouldStopUpdates)
             {
-                UpdateWaypointDestination();
-                UpdateGridDestination();
-                UpdateBackTrackDestination();
-
-                long time = timer.ElapsedMilliseconds;
-                int update_path_interval = m_UpdatePathIntervalOverride > 0 ? m_UpdatePathIntervalOverride : UpdatePathInterval;
-
-                if (ForcePathUpdate || (update_path_interval > 0 && (time - last_path_update_time) > update_path_interval))
-                {
-                    ForcePathUpdate = false;
-                    last_path_update_time = time;
-                    //using (new Profiler("[Nav] Path updated [{t}]"))
-                        UpdatePath();
-                }
-                else
-                    Thread.Sleep(50);
+                OnUpdate(timer.ElapsedMilliseconds);                
             }
         }
+
+        protected virtual void OnUpdate(Int64 time)
+        {
+            UpdateWaypointDestination();
+            UpdateGridDestination();
+            UpdateBackTrackDestination();
+
+            int update_path_interval = m_UpdatePathIntervalOverride > 0 ? m_UpdatePathIntervalOverride : UpdatePathInterval;
+
+            if (ForcePathUpdate || (update_path_interval > 0 && (time - m_LastPathUpdateTime) > update_path_interval))
+            {
+                ForcePathUpdate = false;
+                m_LastPathUpdateTime = time;
+                //using (new Profiler("[Nav] Path updated [{t}]"))
+                UpdatePath();
+            }
+            else
+                Thread.Sleep(50);
+        }
+
+        private Int64 m_LastPathUpdateTime = 0;
+
+        // Controls updated thread execution
+        private volatile bool m_ShouldStopUpdates = false;
 
         private void UpdatePath()
         {
@@ -615,7 +628,7 @@ namespace Nav
                     else
                         distance_from_segment = current_pos.Distance2D(segment.Normalized2D() * projection_len);
 
-                    if (distance_from_segment < Precision)
+                    if (distance_from_segment < DefaultPrecision)
                         new_path.RemoveAt(0);
                     else
                         break;
@@ -628,7 +641,7 @@ namespace Nav
             {
                 // reset override when first destination from path changed
                 if (m_Path.Count == 0 || (new_path.Count > 0 && !m_Path[0].Equals(new_path[0])))
-                    ResetAntiStuckPrecition();
+                    ResetAntiStuckPrecition(current_pos);
 
                 m_Path = new_path;
                 m_PathDestination = destination;
@@ -646,7 +659,7 @@ namespace Nav
 
             if (destination_grids_id.Count > 0)
             {
-                using (m_Navmesh.AquireReadDataLock())
+                using (m_Navmesh.AcquireReadDataLock())
                 {
                     GridCell current_grid = m_Navmesh.m_GridCells.Find(g => g.Contains2D(CurrentPos));
 
@@ -658,7 +671,7 @@ namespace Nav
             }
             
             if (!destination.IsEmpty)
-                SetDestination(destination, DestType.Grid);
+                SetDestination(destination, DestType.Grid, GridDestPrecision);
         }
 
         private void UpdateBackTrackDestination()
@@ -672,7 +685,7 @@ namespace Nav
             }
 
             if (!destination.IsEmpty)
-                SetDestination(destination, DestType.BackTrack);
+                SetDestination(destination, DestType.BackTrack, DefaultPrecision);
         }
 
         private void UpdateWaypointDestination()
@@ -686,34 +699,7 @@ namespace Nav
             }
 
             if (!destination.IsEmpty)
-                SetDestination(destination, DestType.Waypoint);
-        }
-
-        private float GetPrecision()
-        {
-            if (m_PrecisionOverride > 0)
-                return m_PrecisionOverride;
-
-            float precision = Precision;
-
-            if (m_Path.Count == 1)
-            {
-                switch (m_DestinationType)
-                {
-                    case DestType.Grid:
-                        precision = GridDestPrecision;
-                        break;
-                    case DestType.Explore:
-                        precision = ExploreDestPrecision;
-                        break;
-                    case DestType.BackTrack:
-                        // sometimes when grid or explore cell was just reached, back trace might lead us forward instead of backwards
-                        precision = Math.Max(GridDestPrecision, ExploreDestPrecision) + 5;
-                        break;
-                }
-            }
-
-            return precision;
+                SetDestination(destination, DestType.Waypoint, DefaultPrecision);
         }
 
         private void UpdatePathProgression()
@@ -734,7 +720,12 @@ namespace Nav
                 {
                     while (m_Path.Count > 0)
                     {
-                        float precision = GetPrecision();
+                        float precision = DefaultPrecision;
+
+                        if (m_PrecisionOverride > 0)
+                            precision = m_PrecisionOverride;
+                        else if (m_Path.Count == 1)
+                            precision = Precision;
 
                         if (m_CurrentPos.Distance2D(m_Path[0]) > precision)
                             break;
@@ -746,7 +737,7 @@ namespace Nav
 
                         any_node_reached = true;
 
-                        ResetAntiStuckPrecition();
+                        ResetAntiStuckPrecition(m_CurrentPos);
                     }
                 }
 
@@ -796,8 +787,10 @@ namespace Nav
             const float MIN_DIST_TO_RESET = 90;
             const float MIN_TIME_TO_FAIL_DESTINATION_REACH = 20000;
 
-            if (m_DestReachFailedTestPos.IsEmpty || m_DestReachFailedTestPos.Distance(m_CurrentPos) > MIN_DIST_TO_RESET)
-                ResetDestReachFailed();
+            Vec3 curr_pos = CurrentPos;
+
+            if (m_DestReachFailedTestPos.IsEmpty || m_DestReachFailedTestPos.Distance(curr_pos) > MIN_DIST_TO_RESET)
+                ResetDestReachFailed(curr_pos);
             else if (IsStandingOnPurpose)
                 m_DestReachFailedTimer.Stop();
             else
@@ -814,11 +807,11 @@ namespace Nav
                     dest = m_Destination;
                 }
 
-                m_Navmesh.Log("[Nav] Dest " + dest + " [" + dest_type + "] reach failed!");
+                m_Navmesh.Log("[Nav] Destination " + dest + " [" + dest_type + "] reach failed!");
 
                 NotifyOnDestinationReachFailed(dest_type, dest);
 
-                ResetDestReachFailed();
+                ResetDestReachFailed(curr_pos);
             }
         }
 
@@ -835,17 +828,19 @@ namespace Nav
             const float MIN_TIME_TO_BOUNCE = 6000;
             const float MIN_TIME_TO_OVERRIDE_PATH_RANDOM_COEFF = 9000;
 
+            Vec3 curr_pos = CurrentPos;
+
             using (new ReadLock(AntiStuckLock, true))
             {
-                if (m_AntiStuckPrecisionTestPos.IsEmpty || m_AntiStuckPrecisionTestPos.Distance(m_CurrentPos) > MIN_DIST_TO_RESET_ANTI_STUCK_PRECISION)
-                    ResetAntiStuckPrecition();
+                if (m_AntiStuckPrecisionTestPos.IsEmpty || m_AntiStuckPrecisionTestPos.Distance(curr_pos) > MIN_DIST_TO_RESET_ANTI_STUCK_PRECISION)
+                    ResetAntiStuckPrecition(curr_pos);
                 else if (IsStandingOnPurpose)
                     m_AntiStuckPrecisionTimer.Stop();
                 else
                     m_AntiStuckPrecisionTimer.Start();
 
-                if (m_AntiStuckPathingTestPos.IsEmpty || m_AntiStuckPathingTestPos.Distance(m_CurrentPos) > MIN_DIST_TO_RESET_ANTI_STUCK_PATHING)
-                    ResetAntiStuckPathing();
+                if (m_AntiStuckPathingTestPos.IsEmpty || m_AntiStuckPathingTestPos.Distance(curr_pos) > MIN_DIST_TO_RESET_ANTI_STUCK_PATHING)
+                    ResetAntiStuckPathing(curr_pos);
                 else if (IsStandingOnPurpose)
                     m_AntiStuckPathingTimer.Stop();
                 else
@@ -868,7 +863,7 @@ namespace Nav
                 else if (m_AntiStuckPathingTimer.ElapsedMilliseconds > MIN_TIME_TO_BOUNCE &&
                          m_AntiStuckPathingLevel == 1)
                 {
-                    ResetAntiStuckPrecition();
+                    ResetAntiStuckPrecition(curr_pos);
                     m_AntiStuckPathingLevel = 2;
                     m_PathBounce = true;
                     RequestPathUpdate();
@@ -877,7 +872,7 @@ namespace Nav
                 else if (m_AntiStuckPathingTimer.ElapsedMilliseconds > MIN_TIME_TO_OVERRIDE_PATH_RANDOM_COEFF &&
                          m_AntiStuckPathingLevel == 2)
                 {
-                    ResetAntiStuckPrecition();
+                    ResetAntiStuckPrecition(curr_pos);
                     m_PathBounce = false;
                     m_AntiStuckPathingLevel = 3;
                     m_PathRandomCoeffOverride = 1.5f;
@@ -887,32 +882,34 @@ namespace Nav
             }
         }
 
-        private void ResetAntiStuckPrecition()
+        private void ResetAntiStuckPrecition(Vec3 curr_pos)
         {
             using (new WriteLock(AntiStuckLock))
             {
                 m_PrecisionOverride = -1;
-                m_AntiStuckPrecisionTestPos = CurrentPos;
+                m_AntiStuckPrecisionTestPos = curr_pos;
                 m_AntiStuckPrecisionTimer.Reset();
             }
         }
 
-        private void ResetAntiStuckPathing()
+        private void ResetAntiStuckPathing(Vec3 curr_pos)
         {
             using (new WriteLock(AntiStuckLock))
             {
+                if (m_PathRandomCoeffOverride > 0)
+                    RequestPathUpdate();
                 m_PathRandomCoeffOverride = -1;
                 m_UpdatePathIntervalOverride = -1;
                 m_PathBounce = false;
-                m_AntiStuckPathingTestPos = CurrentPos;
+                m_AntiStuckPathingTestPos = curr_pos;
                 m_AntiStuckPathingTimer.Reset();
                 m_AntiStuckPathingLevel = 0;
             }
         }
 
-        private void ResetDestReachFailed()
+        private void ResetDestReachFailed(Vec3 curr_pos)
         {
-            m_DestReachFailedTestPos = CurrentPos;
+            m_DestReachFailedTestPos = curr_pos;
             m_DestReachFailedTimer.Reset();
         }
 
@@ -969,34 +966,34 @@ namespace Nav
 
         protected void NotifyOnHugeCurrentPosChange()
         {
-            List<NavigationObserver> observers_copy = null;
+            List<INavigationObserver> observers_copy = null;
 
             using (new ReadLock(InputLock))
                 observers_copy = m_Observers.ToList();
 
-            foreach (NavigationObserver observer in observers_copy)
+            foreach (INavigationObserver observer in observers_copy)
                 observer.OnHugeCurrentPosChange();
         }
 
         protected void NotifyOnDestinationReached(DestType type, Vec3 dest)
         {
-            List<NavigationObserver> observers_copy = null;
+            List<INavigationObserver> observers_copy = null;
 
             using (new ReadLock(InputLock))
                 observers_copy = m_Observers.ToList();
 
-            foreach (NavigationObserver observer in observers_copy)
+            foreach (INavigationObserver observer in observers_copy)
                 observer.OnDestinationReached(type, dest);
         }
 
         protected void NotifyOnDestinationReachFailed(DestType type, Vec3 dest)
         {
-            List<NavigationObserver> observers_copy = null;
+            List<INavigationObserver> observers_copy = null;
 
             using (new ReadLock(InputLock))
                 observers_copy = m_Observers.ToList();
 
-            foreach (NavigationObserver observer in observers_copy)
+            foreach (INavigationObserver observer in observers_copy)
                 observer.OnDestinationReachFailed(type, dest);
         }
 
@@ -1046,6 +1043,7 @@ namespace Nav
                 w.Write(CurrentPosDiffRecalcThreshold);
                 w.Write(PathNodesShiftDist);
                 w.Write(PathRandomCoeff);
+                w.Write(DefaultPrecision);
                 w.Write(Precision);
             }
         }
@@ -1102,11 +1100,14 @@ namespace Nav
                 CurrentPosDiffRecalcThreshold = r.ReadSingle();
                 PathNodesShiftDist = r.ReadSingle();
                 PathRandomCoeff = r.ReadSingle();
+                DefaultPrecision = r.ReadSingle();
                 Precision = r.ReadSingle();
             }
 
-            ResetAntiStuckPrecition();
-            ResetAntiStuckPathing();
+            Vec3 curr_pos = CurrentPos;
+
+            ResetAntiStuckPrecition(curr_pos);
+            ResetAntiStuckPathing(curr_pos);
         }
 
         private float PATH_NODES_MERGE_DISTANCE = -1;
@@ -1145,7 +1146,7 @@ namespace Nav
         private Vec3 m_Destination = Vec3.Empty; //@ InputLock
         private DestType m_DestinationType = DestType.None; //@ InputLock
 
-        private List<NavigationObserver> m_Observers = new List<NavigationObserver>(); //@ InputLock
+        private List<INavigationObserver> m_Observers = new List<INavigationObserver>(); //@ InputLock
         
         private Navmesh m_Navmesh = null;
     }

@@ -68,9 +68,9 @@
     <Compile Include="Misc\Profiler.cs" />
     <Compile Include="Misc\Vec3.cs" />
     <Compile Include="NavigationEngine.cs" />
-    <Compile Include="NavigationObserver.cs" />
+    <Compile Include="INavigationObserver.cs" />
     <Compile Include="Navmesh.cs" />
-    <Compile Include="NavmeshObserver.cs" />
+    <Compile Include="INavmeshObserver.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
